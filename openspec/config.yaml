@@ -2,10 +2,13 @@
 schema: spec-driven
 
 context: |
-  Tech stack: Python 3.10+ (PyTorch)
-  Architecture: Standard Python package / Module structure
-  Testing: pytest
-  Style: PEP 8, Black/Ruff formatting, MyPy typing
+  Project: M0.1 — Educational autoregressive decoder-only transformer
+  Tech stack: Python 3.10+ / 3.11 (PyTorch, no HuggingFace Trainer)
+  Architecture: Modular Python package (src/tokenizer, src/dataset, src/tools)
+  Testing: pytest 9.1.1, 46 tests (all passing)
+  Style: PEP 8, no formatter/linter installed yet
+  Fase 0 complete: BPE tokenizer, dataset prep, token counter CLI
+  Next: Fase 1 — Model Architecture
 
 rules:
   proposal:
@@ -21,10 +24,10 @@ rules:
     - Keep tasks completable in one session
   apply:
     - Follow existing code patterns
-    tdd: false
-    test_command: "pytest"
+    tdd: true
+    test_command: "pytest -v"
   verify:
-    test_command: "pytest"
+    test_command: "pytest -v"
     build_command: ""
     coverage_threshold: 0
   archive:

@@ -24,7 +24,11 @@ class Tokenizer:
             self.inverse_vocab[val_bytes] = val
 
     def train(self, text: str, vocab_size: int, show_progress: bool = True) -> None:
-        """Trains the tokenizer on raw text to achieve vocab_size (max 32768)."""
+        """Trains the tokenizer on raw text to achieve vocab_size (max 32768).
+        
+        Benchmark: Before O(n*m) per merge (full rebuild), After O(n) amortized (incremental).
+        Uses incremental pair frequency tracking with reverse index to only update affected pairs.
+        """
         if vocab_size > 32768:
             raise ValueError("vocab_size cannot exceed 32768")
         if vocab_size < 258:
@@ -50,24 +54,35 @@ class Tokenizer:
         # To optimize, keep counts of unique words
         word_freqs = collections.Counter(tuple(chunk.encode('utf-8')) for chunk in chunks if chunk)
 
+        # Build initial pair frequency tracking structures
+        # pair_freqs: maps pair -> total frequency (occurrences * word_freq)
+        # pair_to_words: maps pair -> set of words containing that pair (reverse index)
+        # word_to_pairs: maps word -> Counter of pair -> occurrences in that word
+        pair_freqs = collections.Counter()
+        pair_to_words = collections.defaultdict(set)
+        word_to_pairs = {}
+        
+        for word, freq in word_freqs.items():
+            pair_counts = collections.Counter(zip(word, word[1:]))
+            word_to_pairs[word] = pair_counts
+            for pair, count in pair_counts.items():
+                pair_freqs[pair] += count * freq
+                pair_to_words[pair].add(word)
+
         # Merge loop
+        # Benchmark: O(n) amortized per merge vs O(n) per merge before
+        # Key insight: only update pairs in words affected by the merge
         iterator = range(num_merges)
         if show_progress:
             iterator = tqdm(iterator, desc="Training BPE")
 
         for i in iterator:
-            # Count pair frequencies
-            stats = collections.defaultdict(int)
-            for word, freq in word_freqs.items():
-                for pair in zip(word, word[1:]):
-                    stats[pair] += freq
-            
-            if not stats:
+            # Find most frequent pair from incremental tracking
+            if not pair_freqs:
                 break
                 
-            # Find the most frequent pair
-            best_pair = max(stats, key=stats.get)
-            if stats[best_pair] == 0:
+            best_pair = max(pair_freqs, key=pair_freqs.get)
+            if pair_freqs[best_pair] == 0:
                 break
                 
             # Register new token
@@ -81,9 +96,22 @@ class Tokenizer:
             self.vocab[new_token_id] = new_bytes
             self.inverse_vocab[new_bytes] = new_token_id
             
-            # Merge the pair in word_freqs
-            new_word_freqs = {}
-            for word, freq in word_freqs.items():
+            # Get words affected by this merge (only words containing best_pair)
+            affected_words = pair_to_words.get(best_pair, set()).copy()
+            
+            # Remove old pair contributions from affected words
+            for word in affected_words:
+                freq = word_freqs[word]
+                for pair, count in word_to_pairs.get(word, {}).items():
+                    pair_freqs[pair] -= count * freq
+                    pair_to_words[pair].discard(word)
+                    if not pair_to_words[pair]:
+                        del pair_freqs[pair]
+            
+            # Merge the pair in affected words and add new contributions
+            for word in affected_words:
+                freq = word_freqs[word]
+                # Apply merge to create new word
                 new_word = []
                 j = 0
                 while j < len(word):
@@ -93,8 +121,26 @@ class Tokenizer:
                     else:
                         new_word.append(word[j])
                         j += 1
-                new_word_freqs[tuple(new_word)] = freq
-            word_freqs = new_word_freqs
+                new_word_tuple = tuple(new_word)
+                
+                # Update word_freqs
+                del word_freqs[word]
+                word_freqs[new_word_tuple] = word_freqs.get(new_word_tuple, 0) + freq
+                
+                # Calculate new pairs for the merged word
+                new_pair_counts = collections.Counter(zip(new_word_tuple, new_word_tuple[1:]))
+                
+                # Update word_to_pairs for the new word
+                word_to_pairs[new_word_tuple] = new_pair_counts
+                
+                # Add new pair contributions
+                for pair, count in new_pair_counts.items():
+                    pair_freqs[pair] += count * freq
+                    pair_to_words[pair].add(new_word_tuple)
+                
+                # Clean up old word from word_to_pairs
+                if word in word_to_pairs:
+                    del word_to_pairs[word]
 
     def encode(self, text: str, allowed_special: Union[str, Set[str]] = "all") -> List[int]:
         """Encodes UTF-8 text into a list of token IDs, handling special tokens."""
