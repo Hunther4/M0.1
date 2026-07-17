@@ -25,8 +25,8 @@ def test_m01config_validation():
     config = M01Config(d_model=640, n_heads=10)
     assert config.d_head == 64
     
-    # Invalid config should raise AssertionError
-    with pytest.raises(AssertionError):
+    # Invalid config should raise ValueError
+    with pytest.raises(ValueError):
         M01Config(d_model=640, n_heads=7)  # 640 % 7 != 0
 
 def test_m01config_custom_values():

@@ -34,8 +34,10 @@ class M01Config:
     def __post_init__(self) -> None:
         """Validate configuration after initialization."""
         # Ensure d_model is divisible by n_heads
-        assert self.d_model % self.n_heads == 0, \
-            f"d_model ({self.d_model}) must be divisible by n_heads ({self.n_heads})"
+        if self.d_model % self.n_heads != 0:
+            raise ValueError(
+                f"d_model ({self.d_model}) must be divisible by n_heads ({self.n_heads})"
+            )
         
         # Compute head dimension
         self.d_head = self.d_model // self.n_heads  # 64 for default config
