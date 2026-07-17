@@ -33,10 +33,13 @@ This repository contains the foundations for M0.1, establishing the baseline env
   * Tokenizador Byte-level BPE (`bpe.py`) con 256 bytes base + `<|endoftext|>` (256) y `<|pad|>` (257), entrenado hasta vocabulario de 32768.
   * CLI de conteo y visualización de tokens (`counter.py`) con colores ANSI y métricas.
   * Suite de testing (`pytest`) completa.
-* **Fase 1: Model Architecture (Siguiente)**
-  * Capa de Embeddings (tied).
-  * Posicionales: RoPE (Rotary Position Embedding).
-  * Mecanismo de Attention (Decoder-Only Attention, KV-Cache).
+* **Fase 1: Model Architecture (Completada)**
+  * M01Config dataclass with validated defaults.
+  * Capa de Embeddings (tied) — `TokenEmbedding` with weight sharing.
+  * Posicionales: RoPE (Rotary Position Embedding) — explicit sin/cos implementation.
+  * Mecanismo de Attention (Causal Self-Attention, KV-Cache).
+  * FeedForward (SwiGLU) and MoE placeholder.
+  * 75 tests passing (33 new transformer tests + 42 Fase 0 tests).
 * **Fase 2: Bloque Transformer y Entrenamiento**
   * Bloque Transformer completo (RMSNorm, SwiGLU, Residual Connection).
   * Arquitectura GPT Decoder-only (12 capas, 10 heads, d_model=640, d_ff=1728).

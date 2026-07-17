@@ -8,7 +8,8 @@ context: |
   Testing: pytest 9.1.1, 46 tests (all passing)
   Style: PEP 8, no formatter/linter installed yet
   Fase 0 complete: BPE tokenizer, dataset prep, token counter CLI
-  Next: Fase 1 — Model Architecture
+  Fase 1 complete: Model Architecture (config, embeddings, RoPE, attention, KV-Cache, feedforward, MoE)
+  Next: Fase 2 — Transformer Block and Training
 
 rules:
   proposal:
