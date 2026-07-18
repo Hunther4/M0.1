@@ -9,13 +9,14 @@ from src.eval.qa import coherence_test, niah_test
 class MockTokenizer:
     """Mock tokenizer for testing."""
     
-    def __init__(self):
-        self.vocab = {i: bytes([i]) for i in range(256)}
+    def __init__(self, vocab_size: int = 100):
+        self.vocab = {i: bytes([i]) for i in range(vocab_size)}
         self.merges = {}
+        self.vocab_size = vocab_size
     
     def encode(self, text: str):
-        """Simple character-based encoding."""
-        return [ord(c) % 256 for c in text[:100]]  # Limit to 100 chars
+        """Simple character-based encoding with tokens in range [0, vocab_size)."""
+        return [ord(c) % self.vocab_size for c in text[:100]]  # Limit to 100 chars
 
 
 class TestCoherenceTest:

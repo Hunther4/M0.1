@@ -15,12 +15,12 @@ class TestCalculatePerplexity:
         mock_model = MagicMock()
         
         # Create dummy input
-        input_ids = torch.tensor([[1, 2, 3, 4, 5]])
+        input_ids = torch.tensor([[1, 2, 3, 4, 5]])  # 5 tokens
         
         # Mock logits: shape [batch, seq_len, vocab_size]
-        # For simplicity, use a uniform distribution over vocab
+        # Model outputs logits for all input tokens (seq_len = input length)
         vocab_size = 100
-        seq_len = 4  # logits have seq_len = input_ids length - 1 for shift
+        seq_len = 5  # 5 tokens -> 5 output positions
         mock_logits = torch.zeros(1, seq_len, vocab_size)
         # Make one token much more likely to get non-trivial loss
         mock_logits[0, 0, 10] = 5.0  # High logit for token 10
@@ -39,8 +39,8 @@ class TestCalculatePerplexity:
         
         input_ids_1d = torch.tensor([1, 2, 3, 4, 5])
         
-        # Mock logits for 1D input expansion
-        mock_logits = torch.zeros(1, 4, 100)
+        # Mock logits: seq_len = 5 for 5 tokens
+        mock_logits = torch.zeros(1, 5, 100)
         mock_model.return_value = mock_logits
         
         perplexity = calculate_perplexity(mock_model, input_ids_1d)
@@ -55,7 +55,8 @@ class TestCalculatePerplexity:
         input_ids = torch.tensor([[1, 2, 3, 4, 5]])
         attention_mask = torch.tensor([[1, 1, 1, 1, 1]])
         
-        mock_logits = torch.zeros(1, 4, 100)
+        # seq_len = 5 for 5 tokens
+        mock_logits = torch.zeros(1, 5, 100)
         mock_model.return_value = mock_logits
         
         perplexity = calculate_perplexity(mock_model, input_ids, attention_mask)
@@ -70,8 +71,9 @@ class TestLogLoss:
         """Test that log_loss returns expected dictionary structure."""
         mock_model = MagicMock()
         
-        input_ids = torch.tensor([[1, 2, 3, 4, 5]])
-        mock_logits = torch.zeros(1, 4, 100)
+        input_ids = torch.tensor([[1, 2, 3, 4, 5]])  # 5 tokens
+        # seq_len = 5 for 5 tokens
+        mock_logits = torch.zeros(1, 5, 100)
         mock_model.return_value = mock_logits
         
         result = log_loss(mock_model, input_ids)
@@ -86,7 +88,8 @@ class TestLogLoss:
         mock_model = MagicMock()
         
         input_ids = torch.tensor([[1, 2, 3, 4, 5]])  # 5 tokens
-        mock_logits = torch.zeros(1, 4, 100)  # 4 predictions (shifted)
+        # shift gives 4 predictions
+        mock_logits = torch.zeros(1, 5, 100)
         mock_model.return_value = mock_logits
         
         result = log_loss(mock_model, input_ids)
@@ -98,7 +101,7 @@ class TestLogLoss:
         mock_model = MagicMock()
         
         input_ids = torch.tensor([[1, 2, 3, 4, 5]])
-        mock_logits = torch.zeros(1, 4, 100)
+        mock_logits = torch.zeros(1, 5, 100)
         mock_model.return_value = mock_logits
         
         result = log_loss(mock_model, input_ids)

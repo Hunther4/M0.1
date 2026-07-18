@@ -42,7 +42,7 @@ def coherence_test(
             if end < input_ids.size(1):
                 next_token = input_ids[:, end]
                 next_token_prob = probs[0, -1, next_token.item()].item()
-                segment_perplexity = torch.exp(-next_token_prob).item()
+                segment_perplexity = math.exp(-next_token_prob)
                 interval_perplexities.append(segment_perplexity)
     
     avg_coherence = sum(interval_perplexities) / len(interval_perplexities) if interval_perplexities else float("inf")

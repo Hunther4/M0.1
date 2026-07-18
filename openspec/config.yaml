@@ -3,13 +3,19 @@ schema: spec-driven
 
 context: |
   Project: M0.1 — Educational autoregressive decoder-only transformer
-  Tech stack: Python 3.10+ / 3.11 (PyTorch, no HuggingFace Trainer)
-  Architecture: Modular Python package (src/tokenizer, src/dataset, src/tools)
-  Testing: pytest 9.1.1, 46 tests (all passing)
+  Tech stack: Python 3.12.10 / PyTorch 2.12.0+rocm7.14.0 (ROCm via AMD HIP, no HuggingFace Trainer)
+  Hardware: AMD RX 9060 XT (gfx1200, 15.9GB VRAM), ROCm 7.14.0, HIP 7.14.60850
+  Architecture: Modular Python package (src/tokenizer, src/dataset, src/tools, src/inference)
+  Testing: pytest 9.1.1, 194 tests (all passing)
   Style: PEP 8, no formatter/linter installed yet
+  Performance: 162ms forward pass (batch=4, seq=1024, 80M params)
+  Training: Checkpoint at step 200, loss 4.45, needs more training for coherent output
   Fase 0 complete: BPE tokenizer, dataset prep, token counter CLI
   Fase 1 complete: Model Architecture (config, embeddings, RoPE, attention, KV-Cache, feedforward, MoE)
-  Next: Fase 2 — Transformer Block and Training
+  Fase 2 complete: Transformer Block (RMSNorm, TransformerBlock, TransformerLM) and Training Pipeline (TrainingConfig, TinyShakespeareDataset, CheckpointManager, training loop, 97 tests)
+  Fase 3 complete: Inference (sampling strategies, autoregressive generation with KV cache, CLI interface, 16 tests)
+  Next: Fase 4 — Evaluation (perplexity, loss curves, eval CLI)
+  After Fase 4: Training phases (longer training for coherent text)
 
 rules:
   proposal:
