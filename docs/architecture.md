@@ -31,6 +31,11 @@ M0.1 is an autoregressive Decoder-only Transformer model designed for educationa
 * **Grand Total**:
   $$20,971,520 + 59,489,280 + 640 = 80,461,440 \text{ parameters (~80.5M)}$$
 
+## Implementation Status
+* **Fase 0** (✅ Complete): BPE Tokenizer, Dataset Preparation, Token Counter CLI
+* **Fase 1** (✅ Complete): Model Architecture — Config, Embeddings, RoPE, CausalSelfAttention, KV-Cache, FeedForward, MoE
+* **Fase 2** (✅ Complete): Transformer Assembly — RMSNorm, TransformerBlock (pre-norm), TransformerLM (12-layer, 80.46M params), Training Pipeline — TrainingConfig, TinyShakespeareDataset, CheckpointManager (atomic save), AdamW optimizer, cosine LR schedule, gradient clipping, fp32 training loop. **172 tests passing.**
+
 ## Design Constraints
 * **No HuggingFace Trainer**: Built from scratch using native PyTorch.
 * **Modular Codebase**: Every module has single responsibility and small file sizes.
