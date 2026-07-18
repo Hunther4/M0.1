@@ -83,14 +83,16 @@ class TestNiahTest:
     
     def test_niah_returns_dict(self):
         """Test that niah_test returns expected dictionary."""
-        mock_model = MagicMock()
-        mock_model.eval = MagicMock()
-        mock_model.return_value = torch.zeros(1, 10, 100)
-        
         tokenizer = MockTokenizer()
         prompt = "The capital of France is Paris."
         needle = "Paris"
+        haystack = f"{prompt} {needle}"
+        encoded = tokenizer.encode(haystack)
+        seq_len = len(encoded)
         
+        mock_model = MagicMock()
+        mock_model.eval = MagicMock()
+        mock_model.return_value = torch.zeros(1, seq_len, 100)
         result = niah_test(mock_model, prompt, needle, tokenizer)
         
         assert isinstance(result, dict)
@@ -101,43 +103,48 @@ class TestNiahTest:
     
     def test_niah_default_context_length(self):
         """Test that default context length is 512."""
-        mock_model = MagicMock()
-        mock_model.eval = MagicMock()
-        mock_model.return_value = torch.zeros(1, 10, 100)
-        
         tokenizer = MockTokenizer()
         prompt = "The secret code is 42."
         needle = "42"
+        haystack = f"{prompt} {needle}"
+        encoded = tokenizer.encode(haystack)
+        seq_len = len(encoded)
         
+        mock_model = MagicMock()
+        mock_model.eval = MagicMock()
+        mock_model.return_value = torch.zeros(1, seq_len, 100)
         result = niah_test(mock_model, prompt, needle, tokenizer)
         
         assert result["context_length"] == 512
     
     def test_niah_needle_preserved(self):
         """Test that the needle is preserved in result."""
-        mock_model = MagicMock()
-        mock_model.eval = MagicMock()
-        mock_model.return_value = torch.zeros(1, 10, 100)
-        
         tokenizer = MockTokenizer()
         prompt = "Some context"
         needle = "secret123"
+        haystack = f"{prompt} {needle}"
+        encoded = tokenizer.encode(haystack)
+        seq_len = len(encoded)
         
+        mock_model = MagicMock()
+        mock_model.eval = MagicMock()
+        mock_model.return_value = torch.zeros(1, seq_len, 100)
         result = niah_test(mock_model, prompt, needle, tokenizer)
         
         assert result["needle"] == needle
     
     def test_niah_accuracy_bounds(self):
         """Test that accuracy is a valid probability."""
-        mock_model = MagicMock()
-        mock_model.eval = MagicMock()
-        # Return probs that sum to 1 per position
-        probs = torch.ones(1, 10, 100) / 100
-        mock_model.return_value = probs
-        
         tokenizer = MockTokenizer()
         prompt = "Test prompt " * 10
         needle = "42"
+        haystack = f"{prompt} {needle}"
+        encoded = tokenizer.encode(haystack)
+        
+        probs = torch.ones(1, len(encoded), 100) / 100
+        mock_model = MagicMock()
+        mock_model.eval = MagicMock()
+        mock_model.return_value = probs
         
         result = niah_test(mock_model, prompt, needle, tokenizer)
         

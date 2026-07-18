@@ -100,9 +100,9 @@ Examples:
     val_text = val_text[:10000]
     val_tokens = tokenizer.encode(val_text)
     
-    logger.info(f"Evaluating on {len(val_tokens)} tokens")
+    logger.info(f"Evaluating on first {min(len(val_tokens), 512)} of {len(val_tokens)} tokens")
     
-    # Quantitative metrics
+    # Quantitative metrics — use 512 token window for speed
     input_ids = torch.tensor(val_tokens[:512]).unsqueeze(0).to(args.device)
     perplexity = calculate_perplexity(model, input_ids)
     logger.info(f"Perplexity: {perplexity:.4f}")

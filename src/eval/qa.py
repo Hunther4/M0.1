@@ -1,4 +1,5 @@
 """Qualitative benchmarks: coherence and NIAH testing."""
+import math
 import torch
 from torch import Tensor
 from torch.nn import Module
@@ -42,7 +43,8 @@ def coherence_test(
             if end < input_ids.size(1):
                 next_token = input_ids[:, end]
                 next_token_prob = probs[0, -1, next_token.item()].item()
-                segment_perplexity = math.exp(-next_token_prob)
+                # Perplexity = 1/p, not exp(-p)
+                segment_perplexity = 1.0 / max(next_token_prob, 1e-10)
                 interval_perplexities.append(segment_perplexity)
     
     avg_coherence = sum(interval_perplexities) / len(interval_perplexities) if interval_perplexities else float("inf")
@@ -89,18 +91,22 @@ def niah_test(
         logits = model(input_ids)
         probs = torch.softmax(logits, dim=-1)
         
-        # Find needle tokens
+        # Find needle tokens — they are at the END of the haystack
         needle_tokens = tokenizer.encode(needle)
         
-        # Calculate probability of generating needle tokens
+        # Calculate probability of generating needle tokens at their correct positions
+        # (needle is appended to prompt, so it sits at the end of the sequence)
         needle_probs = []
-        for i, token in enumerate(needle_tokens[:4]):  # Check first 4 tokens of needle
-            if input_ids.size(1) > i:
-                token_prob = probs[0, i, token].item()
+        needle_start_pos = len(encoded) - len(needle_tokens)
+        for offset, token in enumerate(needle_tokens[:4]):  # Check first 4 tokens of needle
+            pos = needle_start_pos + offset
+            if pos < input_ids.size(1):
+                token_prob = probs[0, pos, token].item()
                 needle_probs.append(token_prob)
         
         avg_needle_prob = sum(needle_probs) / len(needle_probs) if needle_probs else 0.0
-        accuracy = avg_needle_prob  # Simplified accuracy metric
+        # Accuracy: fraction of needle tokens that were predicted with high probability (>0.01)
+        accuracy = sum(1 for p in needle_probs if p > 0.01) / len(needle_probs) if needle_probs else 0.0
     
     return {
         "needle": needle,
