@@ -57,7 +57,6 @@ def generate(
     generated: list[int] = list(prompt_ids)
 
     # Build KV caches: one per transformer layer
-    # KVCache shape: (1, max_seq_len, n_heads, d_head)
     kv_caches = [
         KVCache(model.config.context_length, model.config.n_heads, model.config.d_head, device)
         for _ in range(model.config.n_layers)
@@ -65,35 +64,28 @@ def generate(
 
     eos_id = tokenizer.special_tokens.get("<|endoftext|>", 256)
 
-    with torch.no_grad():
-        # Single continuous autoregressive loop:
-        #   prompt tokens → fill cache without sampling
-        #   generated tokens → sample next token each step
-        total_steps = len(prompt_ids) + max_gen_len
-
-        for step in range(total_steps):
-            # Current token: from prompt if still in prompt region,
-            # otherwise the last generated token
-            if step < len(prompt_ids):
-                current_id = prompt_ids[step]
-            else:
-                current_id = generated[-1]
-
-            x = torch.tensor([[current_id]], device=device)
+    with torch.inference_mode():
+        # 1. Parallel prefill phase
+        # Process all prompt tokens except the last one in one forward pass to populate the caches.
+        if len(prompt_ids) > 1:
+            prefill_x = torch.tensor([prompt_ids[:-1]], dtype=torch.long, device=device)
+            model(prefill_x, kv_caches)
+            
+        # 2. Autoregressive decoding phase
+        current_id = prompt_ids[-1]
+        x = torch.zeros((1, 1), dtype=torch.long, device=device)
+        
+        for _ in range(max_gen_len):
+            x[0, 0] = current_id
             logits: Tensor = model(x, kv_caches)  # (1, 1, V)
-
-            # Still processing prompt — just fill cache, don't sample
-            if step < len(prompt_ids) - 1:
-                continue
-
-            # Last prompt token: sample the FIRST new token
-            # Generated tokens: sample the NEXT token
+            
             next_logits = logits[0, -1, :]  # (vocab_size,)
             next_id = sample(next_logits, temperature, top_k, top_p)
-
+            
             if next_id == eos_id:
                 break
-
+                
             generated.append(next_id)
+            current_id = next_id
 
     return tokenizer.decode(generated)
