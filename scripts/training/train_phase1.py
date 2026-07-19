@@ -1,5 +1,4 @@
 import os
-import sys
 import time
 import torch
 import torch.nn as nn
@@ -9,19 +8,19 @@ from src.tokenizer.bpe import Tokenizer
 from src.inference.generate import generate
 from src.training.dataset import TinyShakespeareDataset
 from src.training.config import TrainingConfig
+from src.training.checkpoint import save_checkpoint
+from src.training.setup import setup_device, setup_stdout
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
 
 def main():
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
+    setup_stdout()
         
     print("=" * 60)
     print("          M0.1-Lite: Training Phase 1 of 3 (Shakespeare)")
     print("=" * 60)
     
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Device: {device}")
+    device = setup_device()
     
     # 1. Tokenizer
     tokenizer = Tokenizer()
@@ -91,24 +90,8 @@ def main():
             step += 1
             
     # Save checkpoint
-    os.makedirs("checkpoints", exist_ok=True)
     checkpoint_path = "checkpoints/phase1.pt"
-    torch.save({
-        "model_state_dict": model.state_dict(),
-        "config": {
-            "vocab_size": config.vocab_size,
-            "context_length": config.context_length,
-            "d_model": config.d_model,
-            "n_heads": config.n_heads,
-            "d_ff": config.d_ff,
-            "n_layers": config.n_layers,
-            "num_experts": config.num_experts,
-            "num_shared_experts": config.num_shared_experts,
-            "moe_top_k": config.moe_top_k,
-            "use_hybrid_attention": config.use_hybrid_attention,
-            "local_window_size": config.local_window_size
-        }
-    }, checkpoint_path)
+    save_checkpoint(model, config, checkpoint_path)
     print(f"\nPhase 1 checkpoint saved to {checkpoint_path}")
     
     # 5. Generate

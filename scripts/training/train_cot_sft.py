@@ -8,6 +8,8 @@ from src.transformer.config import M01Config
 from src.model.lm import TransformerLM
 from src.tokenizer.bpe import Tokenizer
 from src.inference.generate import generate
+from src.training.checkpoint import save_checkpoint
+from src.training.setup import setup_device, setup_stdout
 from torch.utils.data import DataLoader, Dataset
 from torch.optim import AdamW
 
@@ -71,15 +73,13 @@ class CoTDistillationDataset(Dataset):
         return self.tokens[start:end], self.tokens[start+1:end+1]
 
 def main():
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
+    setup_stdout()
         
     print("=" * 60)
     print("      M0.1-Lite: Chain-of-Thought (CoT) SFT Fine-Tuning (55M)")
     print("=" * 60)
     
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Dispositivo: {device} ({torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'})")
+    device = setup_device()
     
     # 1. Load trained 8K Tokenizer
     tokenizer = Tokenizer()
@@ -164,24 +164,7 @@ def main():
     
     # 5. Save SFT Aligned Model
     aligned_ckpt_path = "checkpoints/m01_hardened_final.pt"
-    torch.save({
-        "model_state_dict": model.state_dict(),
-        "config": {
-            "vocab_size": config.vocab_size,
-            "context_length": config.context_length,
-            "d_model": config.d_model,
-            "n_heads": config.n_heads,
-            "d_ff": config.d_ff,
-            "d_ff_shared": config.d_ff_shared,
-            "d_ff_routed": config.d_ff_routed,
-            "n_layers": config.n_layers,
-            "num_experts": config.num_experts,
-            "num_shared_experts": config.num_shared_experts,
-            "moe_top_k": config.moe_top_k,
-            "use_hybrid_attention": config.use_hybrid_attention,
-            "local_window_size": config.local_window_size
-        }
-    }, aligned_ckpt_path)
+    save_checkpoint(model, config, aligned_ckpt_path)
     print(f"Checkpoint SFT CoT guardado exitosamente en: {aligned_ckpt_path}\n")
     
     # 6. Evaluation Generation Test

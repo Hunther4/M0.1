@@ -1,6 +1,5 @@
 import os
 import sys
-import json
 import time
 import torch
 import torch.nn as nn
@@ -8,92 +7,36 @@ from src.transformer.config import M01Config
 from src.model.lm import TransformerLM
 from src.tokenizer.bpe import Tokenizer
 from src.inference.generate import generate
-from src.training.config import TrainingConfig
-from torch.utils.data import DataLoader, Dataset
+from src.training.datasets import JsonlDataset
+from src.training.checkpoint import save_checkpoint
+from src.training.setup import setup_device, setup_stdout
+from torch.utils.data import DataLoader
 from torch.optim import AdamW
 
-class JSONLDataset(Dataset):
-    """Dataset that reads conversations from JSONL files."""
-    def __init__(self, file_path, tokenizer, seq_len=256, max_lines=1500):
-        self.seq_len = seq_len
-        
-        print(f"Tokenizing JSONL data from {file_path}...")
-        all_tokens = []
-        with open(file_path, "r", encoding="utf-8") as f:
-            for idx, line in enumerate(f):
-                if idx >= max_lines:
-                    break
-                try:
-                    data = json.loads(line)
-                    # Combine system prompt and conversation
-                    text = f"{data['system']}\n{data['conversation']}"
-                    tokens = tokenizer.encode(text)
-                    all_tokens.extend(tokens)
-                    # Add end of text token
-                    all_tokens.append(256)
-                except Exception as e:
-                    continue
-                    
-        self.tokens = torch.tensor(all_tokens, dtype=torch.long)
-        print(f"Loaded {idx+1} lines. Total tokens: {len(self.tokens)}")
-        
-    def __len__(self):
-        if len(self.tokens) <= self.seq_len:
-            return 0
-        return (len(self.tokens) - 1) // self.seq_len
-        
-    def __getitem__(self, idx):
-        start = idx * self.seq_len
-        end = start + self.seq_len
-        x = self.tokens[start:end]
-        y = self.tokens[start+1:end+1]
-        return x, y
-
 def main():
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
+    setup_stdout()
         
     print("=" * 60)
     print("       M0.1-Lite: GPU Training Phase 2 of 3 (Synthetic MoE/Attention)")
     print("=" * 60)
     
     # Use GPU (AMD Radeon RX 9060 XT via ROCm)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Training on Device: {device}")
-    if torch.cuda.is_available():
-        print(f"GPU Name: {torch.cuda.get_device_name(0)}")
+    device = setup_device()
         
     # 1. Tokenizer
     tokenizer = Tokenizer()
     tokenizer.load("data/tokenizer.json")
-    vocab_size = len(tokenizer.vocab)
     
     # 2. Config & Load Phase 1 checkpoint
     checkpoint_path = "checkpoints/phase1.pt"
     if os.path.exists(checkpoint_path):
+        from src.training.checkpoint import load_checkpoint
         print(f"Loading Phase 1 weights from {checkpoint_path}...")
-        checkpoint = torch.load(checkpoint_path, map_location="cpu")
-        ckpt_config = checkpoint["config"]
-        
-        config = M01Config(
-            vocab_size=ckpt_config["vocab_size"],
-            context_length=ckpt_config["context_length"],
-            d_model=ckpt_config["d_model"],
-            n_heads=ckpt_config["n_heads"],
-            d_ff=ckpt_config["d_ff"],
-            n_layers=ckpt_config["n_layers"],
-            num_experts=ckpt_config["num_experts"],
-            num_shared_experts=ckpt_config["num_shared_experts"],
-            moe_top_k=ckpt_config["moe_top_k"],
-            use_hybrid_attention=ckpt_config["use_hybrid_attention"],
-            local_window_size=ckpt_config["local_window_size"]
-        )
-        model = TransformerLM(config)
-        model.load_state_dict(checkpoint["model_state_dict"])
+        model, config = load_checkpoint(checkpoint_path, device="cpu")
     else:
         print("Warning: Phase 1 checkpoint not found. Training from scratch.")
         config = M01Config(
-            vocab_size=vocab_size,
+            vocab_size=32768,
             context_length=256,
             d_model=256,
             n_heads=4,
@@ -115,7 +58,7 @@ def main():
         print(f"Error: Dataset not found at {jsonl_path}")
         sys.exit(1)
         
-    dataset = JSONLDataset(jsonl_path, tokenizer, seq_len=config.context_length, max_lines=1500)
+    dataset = JsonlDataset(tokenizer, [jsonl_path], seq_len=config.context_length, max_lines_per_shard=1500)
     if len(dataset) == 0:
         print("Error: Empty dataset.")
         sys.exit(1)
@@ -167,24 +110,8 @@ def main():
     print(f"\nGPU Training completed in {total_time:.2f} seconds!")
     
     # Save checkpoint Phase 2
-    os.makedirs("checkpoints", exist_ok=True)
     checkpoint_path_p2 = "checkpoints/phase2.pt"
-    torch.save({
-        "model_state_dict": model.state_dict(),
-        "config": {
-            "vocab_size": config.vocab_size,
-            "context_length": config.context_length,
-            "d_model": config.d_model,
-            "n_heads": config.n_heads,
-            "d_ff": config.d_ff,
-            "n_layers": config.n_layers,
-            "num_experts": config.num_experts,
-            "num_shared_experts": config.num_shared_experts,
-            "moe_top_k": config.moe_top_k,
-            "use_hybrid_attention": config.use_hybrid_attention,
-            "local_window_size": config.local_window_size
-        }
-    }, checkpoint_path_p2)
+    save_checkpoint(model, config, checkpoint_path_p2)
     print(f"Phase 2 checkpoint saved to {checkpoint_path_p2}")
     
     # 5. Generation verification

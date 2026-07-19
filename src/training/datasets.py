@@ -3,6 +3,11 @@
 Provides AmplifiedDialogueDataset for identity/slang/defence SFT training
 and JsonlDataset for single or multi-shard JSONL readers used in phase
 training scripts.
+
+Window Behavior: All datasets use OVERLAPPING sliding windows
+(``__len__ = len(tokens) - seq_len``) to maximize training data from
+limited corpora. This matches TinyShakespeareDataset's canonical behavior
+and provides better gradient diversity during autoregressive training.
 """
 
 import json
@@ -39,12 +44,13 @@ class AmplifiedDialogueDataset(Dataset):
         print(f"AmplifiedDialogueDataset loaded. Total tokens: {len(self.tokens)}")
 
     def __len__(self):
+        """Number of overlapping sliding-window samples."""
         if len(self.tokens) <= self.seq_len:
             return 0
-        return (len(self.tokens) - 1) // self.seq_len
+        return len(self.tokens) - self.seq_len
 
     def __getitem__(self, idx):
-        start = idx * self.seq_len
+        start = idx
         end = start + self.seq_len
         return self.tokens[start:end], self.tokens[start + 1 : end + 1]
 
@@ -95,12 +101,13 @@ class JsonlDataset(Dataset):
         )
 
     def __len__(self):
+        """Number of overlapping sliding-window samples."""
         if len(self.tokens) <= self.seq_len:
             return 0
-        return (len(self.tokens) - 1) // self.seq_len
+        return len(self.tokens) - self.seq_len
 
     def __getitem__(self, idx):
-        start = idx * self.seq_len
+        start = idx
         end = start + self.seq_len
         x = self.tokens[start:end]
         y = self.tokens[start + 1 : end + 1]

@@ -83,7 +83,7 @@ def train(
 
             if (step + 1) % log_interval == 0:
                 elapsed = time.time() - start_time
-                steps_per_sec = (step + 1) / elapsed
+                steps_per_sec = (step + 1) / max(elapsed, 1e-6)
                 msg = (
                     f"Step {step + 1}/{steps} | Loss: {loss.item():.4f} "
                     f"| Speed: {steps_per_sec:.1f} steps/s | Time: {elapsed:.1f}s"
