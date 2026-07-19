@@ -1,7 +1,8 @@
-"""Atomic checkpointing for M0.1 training.
+"""Checkpoint utilities for M0.1 training scripts.
 
-Provides the CheckpointManager class for saving and loading training
-checkpoints with atomic file operations to prevent corruption.
+Provides config_to_dict, save_checkpoint, and load_checkpoint helpers
+used across all training scripts, plus the CheckpointManager class for
+atomic checkpoint operations.
 """
 
 import os
@@ -10,6 +11,98 @@ from typing import Any, Dict
 import torch
 import torch.nn as nn
 import torch.optim as optim
+
+from src.transformer.config import M01Config
+
+
+def config_to_dict(config):
+    """Convert an M01Config instance to an 11-field serialization dict.
+
+    Args:
+        config: M01Config instance.
+
+    Returns:
+        dict with the 11 core M01Config fields.
+    """
+    return {
+        "vocab_size": config.vocab_size,
+        "context_length": config.context_length,
+        "d_model": config.d_model,
+        "n_heads": config.n_heads,
+        "d_ff": config.d_ff,
+        "n_layers": config.n_layers,
+        "num_experts": config.num_experts,
+        "num_shared_experts": config.num_shared_experts,
+        "moe_top_k": config.moe_top_k,
+        "use_hybrid_attention": config.use_hybrid_attention,
+        "local_window_size": config.local_window_size,
+    }
+
+
+def save_checkpoint(model, config, path):
+    """Save model state dict and config dict to a checkpoint file.
+
+    Creates the parent directory if it does not exist. The checkpoint dict
+    contains 'model_state_dict' and 'config' keys.
+
+    Args:
+        model: nn.Module whose state_dict will be saved.
+        config: M01Config instance to serialize.
+        path: File path for the checkpoint.
+    """
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "config": config_to_dict(config),
+        },
+        path,
+    )
+
+
+def load_checkpoint(path, device="cpu"):
+    """Load a checkpoint and reconstruct the M01Config and TransformerLM model.
+
+    The checkpoint must contain 'model_state_dict' and 'config' keys. The
+    config dict is used to build an M01Config, which in turn builds a
+    TransformerLM whose state_dict is then loaded.
+
+    Args:
+        path: File path to the checkpoint.
+        device: Device to load the model onto (default 'cpu').
+
+    Returns:
+        Tuple of (model, config) where model is a TransformerLM instance
+        with loaded weights and config is the reconstructed M01Config.
+
+    Raises:
+        FileNotFoundError: If the checkpoint file does not exist.
+    """
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Checkpoint not found at {path}")
+
+    from src.model.lm import TransformerLM
+
+    checkpoint = torch.load(path, map_location=device)
+    ckpt_config = checkpoint["config"]
+
+    config = M01Config(
+        vocab_size=ckpt_config["vocab_size"],
+        context_length=ckpt_config["context_length"],
+        d_model=ckpt_config["d_model"],
+        n_heads=ckpt_config["n_heads"],
+        d_ff=ckpt_config["d_ff"],
+        n_layers=ckpt_config["n_layers"],
+        num_experts=ckpt_config["num_experts"],
+        num_shared_experts=ckpt_config["num_shared_experts"],
+        moe_top_k=ckpt_config["moe_top_k"],
+        use_hybrid_attention=ckpt_config["use_hybrid_attention"],
+        local_window_size=ckpt_config["local_window_size"],
+    )
+    model = TransformerLM(config).to(device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+
+    return model, config
 
 
 class CheckpointManager:
