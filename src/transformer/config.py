@@ -19,6 +19,8 @@ class M01Config:
         n_layers: Number of transformer layers (default: 12)
         rope_theta: RoPE theta parameter (default: 10000.0)
         num_experts: Number of experts for MoE (default: 1 for dense)
+        num_shared_experts: Number of shared experts for DeepSeek-style MoE (default: 1)
+        moe_top_k: Number of active routed experts per token (default: 1)
         dropout: Dropout rate (default: 0.0)
     """
     vocab_size: int = 32768
@@ -29,6 +31,14 @@ class M01Config:
     n_layers: int = 12
     rope_theta: float = 10000.0
     num_experts: int = 1
+    num_shared_experts: int = 1
+    moe_top_k: int = 1
+    d_ff_shared: int | None = None
+    d_ff_routed: int | None = None
+    use_hybrid_attention: bool = False
+    csa_kv_dim: int = 128
+    hca_kv_dim: int = 32
+    local_window_size: int = 64
     dropout: float = 0.0
 
     def __post_init__(self) -> None:

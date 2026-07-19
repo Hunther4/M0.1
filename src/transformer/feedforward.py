@@ -17,18 +17,21 @@ class FeedForward(nn.Module):
     When num_experts>1, this can be used as a single expert in MoE.
     """
     
-    def __init__(self, config: M01Config) -> None:
+    def __init__(self, config: M01Config, d_ff: int | None = None) -> None:
         """Initialize feedforward network.
         
         Args:
             config: M01Config with d_model, d_ff
+            d_ff: Optional override for feedforward hidden dimension
         """
         super().__init__()
         
+        hidden_dim = d_ff if d_ff is not None else config.d_ff
+        
         # SwiGLU projections
-        self.gate_proj = nn.Linear(config.d_model, config.d_ff, bias=False)
-        self.up_proj = nn.Linear(config.d_model, config.d_ff, bias=False)
-        self.down_proj = nn.Linear(config.d_ff, config.d_model, bias=False)
+        self.gate_proj = nn.Linear(config.d_model, hidden_dim, bias=False)
+        self.up_proj = nn.Linear(config.d_model, hidden_dim, bias=False)
+        self.down_proj = nn.Linear(hidden_dim, config.d_model, bias=False)
         
         # Store config for potential MoE usage
         self.config = config

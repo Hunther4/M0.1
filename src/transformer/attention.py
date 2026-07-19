@@ -33,10 +33,26 @@ class CausalSelfAttention(nn.Module):
         self.d_head = config.d_head
         self.d_model = config.d_model
         
-        # Q/K/V projections (no bias)
+        self.use_hybrid_attention = config.use_hybrid_attention
+        self.local_window_size = config.local_window_size
+        
+        # Q projection (no bias)
         self.W_q = nn.Linear(config.d_model, config.d_model, bias=False)
-        self.W_k = nn.Linear(config.d_model, config.d_model, bias=False)
-        self.W_v = nn.Linear(config.d_model, config.d_model, bias=False)
+        
+        if self.use_hybrid_attention:
+            # Compressed Sparse Attention (CSA) - moderate compression
+            self.W_kv_csa = nn.Linear(config.d_model, config.csa_kv_dim, bias=False)
+            self.W_k_csa_up = nn.Linear(config.csa_kv_dim, config.d_model, bias=False)
+            self.W_v_csa_up = nn.Linear(config.csa_kv_dim, config.d_model, bias=False)
+            
+            # Heavily Compressed Attention (HCA) - high compression
+            self.W_kv_hca = nn.Linear(config.d_model, config.hca_kv_dim, bias=False)
+            self.W_k_hca_up = nn.Linear(config.hca_kv_dim, config.d_model, bias=False)
+            self.W_v_hca_up = nn.Linear(config.hca_kv_dim, config.d_model, bias=False)
+        else:
+            # Standard projections
+            self.W_k = nn.Linear(config.d_model, config.d_model, bias=False)
+            self.W_v = nn.Linear(config.d_model, config.d_model, bias=False)
         
         # Output projection
         self.W_o = nn.Linear(config.d_model, config.d_model, bias=False)
@@ -63,10 +79,34 @@ class CausalSelfAttention(nn.Module):
         """
         batch_size, seq_len, _ = x.shape
         
-        # Project to Q, K, V: (batch, seq, d_model) → (batch, seq, d_model)
+        # Project to Q, K, V
         q = self.W_q(x)
-        k = self.W_k(x)
-        v = self.W_v(x)
+        
+        if self.use_hybrid_attention:
+            # Compressed projections
+            csa_lat = self.W_kv_csa(x)
+            k_csa = self.W_k_csa_up(csa_lat)
+            v_csa = self.W_v_csa_up(csa_lat)
+            
+            if kv_cache is not None:
+                # During step-by-step decoding, the current token is always local (CSA)
+                k = k_csa
+                v = v_csa
+            elif seq_len > self.local_window_size:
+                # Hybrid: HCA for history, CSA for local window
+                hca_lat = self.W_kv_hca(x)
+                k_hca = self.W_k_hca_up(hca_lat)
+                v_hca = self.W_v_hca_up(hca_lat)
+                
+                split_idx = seq_len - self.local_window_size
+                k = torch.cat([k_hca[:, :split_idx], k_csa[:, split_idx:]], dim=1)
+                v = torch.cat([v_hca[:, :split_idx], v_csa[:, split_idx:]], dim=1)
+            else:
+                k = k_csa
+                v = v_csa
+        else:
+            k = self.W_k(x)
+            v = self.W_v(x)
         
         # Reshape to (batch, seq, n_heads, d_head)
         q = q.view(batch_size, seq_len, self.n_heads, self.d_head)
@@ -83,42 +123,30 @@ class CausalSelfAttention(nn.Module):
             # Append to cache and get full K, V
             k, v = kv_cache.append(k, v)
         
-        # Compute attention scores: Q @ K^T / sqrt(d_head)
-        # (batch, q_len, n_heads, d_head) @ (batch, kv_len, n_heads, d_head)^T
-        # → (batch, n_heads, q_len, kv_len)
+        # Compute attention scores and output using PyTorch's native SDPA (Scaled Dot Product Attention)
+        # This will automatically dispatch to FlashAttention or Memory Efficient Attention on GPU.
         q_len = seq_len
         kv_len = k.shape[1]
-        
-        # Transpose for batch matrix multiplication
-        # (batch, seq, n_heads, d_head) → (batch, n_heads, seq, d_head)
+
         q = q.transpose(1, 2)
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
-        
-        # Attention scores: (batch, n_heads, q_len, kv_len)
-        attn_scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale
-        
-        # Apply causal mask
-        # For self-attention without cache: q_len == kv_len
-        # For cached attention: q_len == 1, kv_len == past + 1
+
         if kv_cache is None:
-            # Standard causal mask for self-attention
-            mask = torch.triu(torch.ones(q_len, kv_len, device=x.device), diagonal=1)
-            mask = mask.masked_fill(mask == 1, float('-inf'))
-            attn_scores = attn_scores + mask.unsqueeze(0).unsqueeze(0)
+            # Standard causal self-attention
+            attn_output = F.scaled_dot_product_attention(q, k, v, is_causal=True)
         else:
-            # For cached generation, only need to mask future positions
-            # Since we're generating one token at a time, no masking needed
-            # (each step only attends to past + current token)
-            pass
-        
-        # Softmax over last dimension
-        attn_weights = F.softmax(attn_scores, dim=-1)
-        
-        # Weighted sum: (batch, n_heads, q_len, kv_len) @ (batch, n_heads, kv_len, d_head)
-        # → (batch, n_heads, q_len, d_head)
-        attn_output = torch.matmul(attn_weights, v)
-        
+            if q_len > 1:
+                # Causal masking for parallel prefill in KV Cache
+                q_pos = torch.arange(offset, offset + q_len, device=x.device).unsqueeze(1)
+                k_pos = torch.arange(kv_len, device=x.device).unsqueeze(0)
+                mask = k_pos <= q_pos  # True means keep attention, False means mask out
+                attn_mask = mask.unsqueeze(0).unsqueeze(0)  # Broadcast to (1, 1, q_len, kv_len)
+                attn_output = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+            else:
+                # Autoregressive decoding (q_len == 1), no masking needed
+                attn_output = F.scaled_dot_product_attention(q, k, v)
+
         # Transpose back: (batch, n_heads, q_len, d_head) → (batch, q_len, n_heads, d_head)
         attn_output = attn_output.transpose(1, 2)
         

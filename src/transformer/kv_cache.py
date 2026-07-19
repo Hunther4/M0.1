@@ -50,18 +50,20 @@ class KVCache:
         batch_size = k.shape[0]
         if batch_size != 1:
             raise ValueError(f"Batch size must be 1 for KV cache, got {batch_size}")
-        if k.shape[1] != 1:
-            raise ValueError(f"Sequence length must be 1 for single append, got {k.shape[1]}")
+            
+        new_len = k.shape[1]
+        if self._seq_len + new_len > self.max_seq_len:
+            raise ValueError(f"KV cache capacity exceeded: cached {self._seq_len + new_len} tokens, max capacity is {self.max_seq_len}")
         
         # Store at current position
-        self.k[:, self._seq_len:self._seq_len + 1] = k
-        self.v[:, self._seq_len:self._seq_len + 1] = v
+        self.k[:, self._seq_len:self._seq_len + new_len] = k
+        self.v[:, self._seq_len:self._seq_len + new_len] = v
         
         # Increment position
-        self._seq_len += 1
+        self._seq_len += new_len
         
-        # Return sliced tensors up to current length
-        return self.k[:, :self._seq_len].clone(), self.v[:, :self._seq_len].clone()
+        # Return sliced tensors up to current length as views (no clone)
+        return self.k[:, :self._seq_len], self.v[:, :self._seq_len]
     
     def reset(self) -> None:
         """Reset cache to empty state."""
