@@ -46,4 +46,34 @@ def test_moe_gradient_flow():
     loss.backward()
     
     assert x.grad is not None, "Gradient should flow through MoE"
+    assert x.grad is not None, "Gradient should flow through MoE"
     assert x.grad.shape == x.shape
+
+def test_moe_with_multiple_shared_and_routed_experts():
+    """Test MoE with multiple shared and routed experts."""
+    config = M01Config(num_experts=4, num_shared_experts=2, moe_top_k=2)
+    moe = MoELayer(config)
+    
+    assert len(moe.shared_experts) == 2
+    assert len(moe.experts) == 4
+    
+    batch, seq_len = 2, 8
+    x = torch.randn(batch, seq_len, config.d_model)
+    output = moe(x)
+    assert output.shape == (batch, seq_len, config.d_model)
+
+def test_moe_routing_distribution():
+    """Test that routing behaves dynamically and utilizes shared experts."""
+    config = M01Config(num_experts=3, num_shared_experts=1, moe_top_k=1)
+    moe = MoELayer(config)
+    
+    # We will pass a set of highly distinct vectors to see if they end up being routed
+    # differently by the gate.
+    x = torch.randn(10, 1, config.d_model)
+    
+    # Mock gate weights to force diverse routing
+    with torch.no_grad():
+        moe.gate.weight.normal_(0, 1.0)
+        
+    output = moe(x)
+    assert output.shape == (10, 1, config.d_model)

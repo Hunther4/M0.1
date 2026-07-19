@@ -88,7 +88,7 @@ class TestGenerateReportIntegration:
         """Test that generate_report.py --help works."""
         import subprocess
         result = subprocess.run(
-            ["python", "scripts/generate_report.py", "--help"],
+            ["python", "scripts/utils/generate_report.py", "--help"],
             capture_output=True,
             text=True
         )
@@ -117,7 +117,7 @@ class TestGenerateReportIntegration:
         
         try:
             result = subprocess.run(
-                ["python", "scripts/generate_report.py", "--eval", temp_json],
+                ["python", "scripts/utils/generate_report.py", "--eval", temp_json],
                 capture_output=True,
                 text=True
             )
@@ -138,7 +138,7 @@ class TestCompareIntegration:
         """Test that compare.py --help works."""
         import subprocess
         result = subprocess.run(
-            ["python", "scripts/compare.py", "--help"],
+            ["python", "scripts/evaluation/compare.py", "--help"],
             capture_output=True,
             text=True
         )
@@ -172,7 +172,7 @@ class TestCompareIntegration:
         
         try:
             result = subprocess.run(
-                ["python", "scripts/compare.py", "--json1", temp1, "--json2", temp2],
+                ["python", "scripts/evaluation/compare.py", "--json1", temp1, "--json2", temp2],
                 capture_output=True,
                 text=True
             )

@@ -78,3 +78,44 @@ def test_attention_gradient_flow():
     
     assert x.grad is not None, "Gradient should flow through attention"
     assert x.grad.shape == x.shape
+
+def test_hybrid_attention_output_shape():
+    """Test hybrid attention with compressed projections."""
+    config = M01Config(use_hybrid_attention=True)
+    attention = CausalSelfAttention(config)
+    
+    batch, seq_len = 2, 10
+    x = torch.randn(batch, seq_len, config.d_model)
+    output = attention(x)
+    assert output.shape == (batch, seq_len, config.d_model)
+
+def test_hybrid_attention_long_context():
+    """Test hybrid attention when sequence length exceeds local window (triggering HCA)."""
+    config = M01Config(use_hybrid_attention=True, local_window_size=8)
+    attention = CausalSelfAttention(config)
+    
+    # seq_len = 12 > local_window_size (8)
+    batch, seq_len = 1, 12
+    x = torch.randn(batch, seq_len, config.d_model)
+    output = attention(x)
+    assert output.shape == (batch, seq_len, config.d_model)
+
+def test_hybrid_attention_with_kv_cache():
+    """Test hybrid attention with KV cache step-by-step decoding."""
+    config = M01Config(use_hybrid_attention=True, local_window_size=8)
+    attention = CausalSelfAttention(config)
+    from src.transformer.kv_cache import KVCache
+    
+    cache = KVCache(max_seq_len=15, n_heads=config.n_heads, d_head=config.d_head)
+    
+    # Step 1
+    x1 = torch.randn(1, 1, config.d_model)
+    output1 = attention(x1, kv_cache=cache)
+    assert output1.shape == (1, 1, config.d_model)
+    assert cache.seq_len == 1
+    
+    # Step 2
+    x2 = torch.randn(1, 1, config.d_model)
+    output2 = attention(x2, kv_cache=cache)
+    assert output2.shape == (1, 1, config.d_model)
+    assert cache.seq_len == 2
