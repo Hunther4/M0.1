@@ -16,7 +16,7 @@ from src.transformer.config import M01Config
 
 
 def config_to_dict(config):
-    """Convert an M01Config instance to an 11-field serialization dict.
+    """Convert an M01Config instance to a serialization dict.
 
     Args:
         config: M01Config instance.
@@ -24,7 +24,7 @@ def config_to_dict(config):
     Returns:
         dict with the 11 core M01Config fields.
     """
-    return {
+    result = {
         "vocab_size": config.vocab_size,
         "context_length": config.context_length,
         "d_model": config.d_model,
@@ -37,6 +37,12 @@ def config_to_dict(config):
         "use_hybrid_attention": config.use_hybrid_attention,
         "local_window_size": config.local_window_size,
     }
+    # Include optional MoE fields if present and not None
+    if hasattr(config, "d_ff_shared") and config.d_ff_shared is not None:
+        result["d_ff_shared"] = config.d_ff_shared
+    if hasattr(config, "d_ff_routed") and config.d_ff_routed is not None:
+        result["d_ff_routed"] = config.d_ff_routed
+    return result
 
 
 def save_checkpoint(model, config, path):

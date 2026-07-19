@@ -21,6 +21,7 @@ def train(
     scaler=None,
     val_loader=None,
     target_loss=None,
+    max_batches=30,
 ):
     """Run the shared training loop.
 
@@ -42,6 +43,7 @@ def train(
         scaler: Optional torch.cuda.amp.GradScaler for AMP training.
         val_loader: Optional DataLoader for validation loss computation.
         target_loss: Optional float; stop training if loss drops below this.
+        max_batches: Maximum number of validation batches to use (default 30).
 
     Returns:
         dict with keys:
@@ -89,7 +91,7 @@ def train(
                 if val_loader is not None:
                     from src.training.eval import evaluate_val_loss
 
-                    val_loss = evaluate_val_loss(model, val_loader, device, criterion)
+                    val_loss = evaluate_val_loss(model, val_loader, device, criterion, max_batches=max_batches)
                     val_ppl = torch.exp(torch.tensor(val_loss)).item()
                     msg += f" | Val Loss: {val_loss:.4f} | Val PPL: {val_ppl:.2f}"
                 print(msg)

@@ -8,40 +8,13 @@ from src.transformer.config import M01Config
 from src.model.lm import TransformerLM
 from src.tokenizer.bpe import Tokenizer
 from src.inference.generate import generate
-from torch.utils.data import DataLoader, Dataset
+from src.training.checkpoint import config_to_dict, save_checkpoint
+from src.training.loop import train
+from src.training.eval import evaluate_val_loss
+from src.training.datasets import JsonlDataset
+from src.training.setup import setup_device, setup_stdout
+from torch.utils.data import DataLoader
 from torch.optim import AdamW
-
-class MultiShardJSONLDataset(Dataset):
-    def __init__(self, shards_paths, tokenizer, seq_len=256, max_lines_per_shard=800):
-        self.seq_len = seq_len
-        all_tokens = []
-        for path in shards_paths:
-            if not os.path.exists(path):
-                continue
-            with open(path, "r", encoding="utf-8") as f:
-                for idx, line in enumerate(f):
-                    if idx >= max_lines_per_shard:
-                        break
-                    try:
-                        data = json.loads(line)
-                        text = f"{data['system']}\n{data['conversation']}"
-                        tokens = tokenizer.encode(text)
-                        all_tokens.extend(tokens)
-                        all_tokens.append(256) # End of text token
-                    except Exception:
-                        continue
-        self.tokens = torch.tensor(all_tokens, dtype=torch.long)
-        print(f"Dataset Loaded. Total tokens: {len(self.tokens)}")
-        
-    def __len__(self):
-        if len(self.tokens) <= self.seq_len:
-            return 0
-        return (len(self.tokens) - 1) // self.seq_len
-        
-    def __getitem__(self, idx):
-        start = idx * self.seq_len
-        end = start + self.seq_len
-        return self.tokens[start:end], self.tokens[start+1:end+1]
 
 def evaluate_val_ppl(model, val_loader, device, criterion):
     model.eval()
@@ -131,15 +104,13 @@ def run_story_test(model, tokenizer, device):
     return ratio >= 0.70, generated, ratio
 
 def main():
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
-        
+    setup_stdout()
+    
     print("=" * 60)
     print("       M0.1-Lite: 8K Vocab Tokenizer + 5800 Step GPU Training")
     print("=" * 60)
     
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Device: {device} ({torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'})")
+    device = setup_device()
     
     # 1. Train Tokenizer to 8192 vocabulary (Shakespeare + Synthetic Spanish Conversations)
     print("\nTraining 8K Tokenizer on combined corpus...")
@@ -185,11 +156,11 @@ def main():
     # 3. Load Datasets
     shards_dir = "D:/Proyectos/M0.2/data/corpus/synthetic"
     train_shards = [os.path.join(shards_dir, f"shard_{i:04d}.jsonl") for i in range(5)]
-    train_dataset = MultiShardJSONLDataset(train_shards, tokenizer, seq_len=config.context_length, max_lines_per_shard=800)
+    train_dataset = JsonlDataset(tokenizer, train_shards, seq_len=config.context_length, max_lines_per_shard=800)
     train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True)
     
     val_shard = [os.path.join(shards_dir, "shard_0010.jsonl")]
-    val_dataset = MultiShardJSONLDataset(val_shard, tokenizer, seq_len=config.context_length, max_lines_per_shard=300)
+    val_dataset = JsonlDataset(tokenizer, val_shard, seq_len=config.context_length, max_lines_per_shard=300)
     val_loader = DataLoader(val_dataset, batch_size=8, shuffle=False)
     
     optimizer = AdamW(model.parameters(), lr=3e-4, weight_decay=0.01)
@@ -198,55 +169,17 @@ def main():
     # 4. Training (5800 steps)
     model.train()
     steps = 5800
-    step = 0
-    start_time = time.time()
     
     print(f"\nTraining on GPU for {steps} steps...")
     
-    done = False
-    while not done:
-        for x, y in train_loader:
-            if step >= steps:
-                done = True
-                break
-                
-            x, y = x.to(device), y.to(device)
-            logits = model(x)
-            loss = criterion(logits.view(-1, logits.size(-1)), y.view(-1))
-            
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            
-            if (step + 1) % 500 == 0:
-                val_loss, ppl = evaluate_val_ppl(model, val_loader, device, criterion)
-                elapsed = time.time() - start_time
-                steps_per_sec = (step + 1) / elapsed
-                print(f"Step {step + 1}/{steps} | Loss: {loss.item():.4f} | Val Loss: {val_loss:.4f} | Val PPL: {ppl:.2f} | Speed: {steps_per_sec:.1f} st/s | Time: {elapsed:.1f}s")
-                
-            step += 1
-            
-    print(f"\nGPU Training completed in {time.time() - start_time:.2f} seconds!")
+    train_result = train(model, train_loader, optimizer, criterion, steps, device, log_interval=500, val_loader=val_loader)
+    
+    print(f"\nGPU Training completed in {train_result['elapsed']:.2f} seconds!")
     
     # Save checkpoint
     os.makedirs("checkpoints", exist_ok=True)
     checkpoint_path_final = "checkpoints/vocab_8k_final.pt"
-    torch.save({
-        "model_state_dict": model.state_dict(),
-        "config": {
-            "vocab_size": config.vocab_size,
-            "context_length": config.context_length,
-            "d_model": config.d_model,
-            "n_heads": config.n_heads,
-            "d_ff": config.d_ff,
-            "n_layers": config.n_layers,
-            "num_experts": config.num_experts,
-            "num_shared_experts": config.num_shared_experts,
-            "moe_top_k": config.moe_top_k,
-            "use_hybrid_attention": config.use_hybrid_attention,
-            "local_window_size": config.local_window_size
-        }
-    }, checkpoint_path_final)
+    save_checkpoint(model, config, checkpoint_path_final)
     print(f"8K vocab checkpoint saved to {checkpoint_path_final}\n")
     
     # 5. Run 5-test Evaluation suite
