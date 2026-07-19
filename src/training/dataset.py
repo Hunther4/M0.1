@@ -35,12 +35,19 @@ class TinyShakespeareDataset:
         self.seq_len = config.seq_len
         data_dir = config.data_dir
 
-        # Load trained BPE tokenizer
+        # Load trained BPE tokenizer (check subfolder first, fallback to root)
         tokenizer = Tokenizer()
-        tokenizer.load(os.path.join(data_dir, "tokenizer.json"))
+        tokenizer_path = os.path.join(data_dir, "tokenizers", "tokenizer.json")
+        if not os.path.exists(tokenizer_path):
+            tokenizer_path = os.path.join(data_dir, "tokenizer.json")
+        tokenizer.load(tokenizer_path)
 
-        # Tokenize the full corpus once at init
-        with open(os.path.join(data_dir, "tinyshakespeare.txt"), "r", encoding="utf-8") as f:
+        # Tokenize the full corpus once at init (check subfolder first, fallback to root)
+        text_path = os.path.join(data_dir, "raw_text", "tinyshakespeare.txt")
+        if not os.path.exists(text_path):
+            text_path = os.path.join(data_dir, "tinyshakespeare.txt")
+
+        with open(text_path, "r", encoding="utf-8") as f:
             text = f.read()
 
         tokens: list[int] = tokenizer.encode(text)

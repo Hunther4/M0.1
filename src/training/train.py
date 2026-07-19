@@ -118,6 +118,7 @@ def train(
         shuffle=True,
         drop_last=True,
         num_workers=0,
+        pin_memory=(device.type == "cuda"),
     )
     data_iter = iter(loader)
 
@@ -141,6 +142,9 @@ def train(
         state = alt_manager.load(model, optimizer, scheduler)
         start_step = state["step"] + 1
 
+    # --- AMP Gradient Scaler ---
+    scaler = torch.cuda.amp.GradScaler(enabled=(device.type == "cuda"))
+
     # --- Training loop ---
     model.train()
     step_loss: float = 0.0
@@ -156,15 +160,16 @@ def train(
         # Move data to device
         x, y = x.to(device), y.to(device)
 
-        # Forward
-        logits = model(x)
-        loss = F.cross_entropy(
-            logits.view(-1, model_config.vocab_size),
-            y.view(-1),
-        )
+        # Forward with autocast
+        with torch.amp.autocast(device_type=device.type, enabled=(device.type == "cuda")):
+            logits = model(x)
+            loss = F.cross_entropy(
+                logits.view(-1, model_config.vocab_size),
+                y.view(-1),
+            )
 
-        # Backward
-        loss.backward()
+        # Backward with scaling
+        scaler.scale(loss).backward()
         step_loss = loss.item()
 
         # Non-finite loss guard (NaN or Inf) — check BEFORE optimizer.step
@@ -176,10 +181,15 @@ def train(
             )
             break
 
+        # Unscale for gradient clipping
+        scaler.unscale_(optimizer)
         total_norm = torch.nn.utils.clip_grad_norm_(
             model.parameters(), config.max_norm
         )
-        optimizer.step()
+        
+        # Step and update scaler
+        scaler.step(optimizer)
+        scaler.update()
         scheduler.step()
         optimizer.zero_grad()
 
