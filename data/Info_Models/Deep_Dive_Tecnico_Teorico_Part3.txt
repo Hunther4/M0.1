@@ -1,0 +1,13 @@
+## III. Paradigmas Avanzados (Expansión)
+
+### A. Programación Funcional y Monadas
+
+Las mónadas son más que contenedores. Son una estructura formal para la computación secuencial.
+*   **Applicative Functors**: Más débiles que las mónadas, permiten combinar efectos independientes sin dependencia entre ellos, lo cual es excelente para optimización.
+*   **Lenses**: Permiten acceso y modificación profunda en estructuras de datos inmutables de forma composible.
+
+### B. Consenso en Sistemas Distribuidos: Paxos y Raft
+
+El problema del consenso es crítico.
+*   **Paxos**: Basado en un sistema de mayorías (quórums), es el protocolo clásico pero notoriously difícil de implementar.
+*   **Raft**: Diseñado para ser entendible, utiliza una elección de líder centralizada y un log replicado, garantizando seguridad y vivacidad bajo condiciones de fallo (tolerancia a $f$ fallos con $2f+1$ nodos).

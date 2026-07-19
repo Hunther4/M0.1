@@ -1,0 +1,13 @@
+## II. Teoría de la Computación (Expansión)
+
+### A. Lenguajes Formales y Pumping Lemma
+
+El *Pumping Lemma* es la herramienta técnica para demostrar que un lenguaje no es regular. Si un lenguaje $L$ es regular, existe una longitud de bombeo $p$ tal que cualquier cadena $w \in L$ con $|w| \ge p$ se puede dividir en $xyz$ cumpliendo condiciones que permiten "bombear" $y$ (repetirlo $y^i$) manteniendo la cadena dentro de $L$. Si esto falla, el lenguaje no es regular.
+
+### B. Indecidibilidad y Rice's Theorem
+
+El Teorema de Rice es contundente: no existe un algoritmo general que pueda decidir cualquier propiedad no trivial sobre el lenguaje aceptado por una máquina de Turing. Esto implica que no podemos escribir un analizador estático perfecto que determine si un programa dado tendrá un error de segmentación, si será eficiente, o si terminará.
+
+### C. Complejidad y Cook-Levin
+
+La demostración de que SAT es NP-Completo es la piedra angular. Cook y Levin demostraron que cualquier máquina de Turing no determinista puede ser codificada como una fórmula booleana cuya satisfacibilidad equivale a la aceptación de la entrada. Esto vincula la computación física con la lógica proposicional de una manera que todavía define nuestra comprensión de la eficiencia computacional.

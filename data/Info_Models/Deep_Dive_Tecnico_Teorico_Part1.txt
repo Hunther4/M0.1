@@ -1,0 +1,31 @@
+# Deep Dive Técnico-Teórico: Una Exposición Formal Detallada
+
+## I. Matemáticas Fundamentales (Continuación de la Expansión)
+
+### A. Teoría de Conjuntos: Los Axiomas de Zermelo-Fraenkel
+
+La base de la matemática moderna se asienta sobre los axiomas de Zermelo-Fraenkel, que intentan evitar las paradojas de la teoría de conjuntos ingenua (como la paradoja de Russell).
+
+1.  **Axioma de Extensionalidad**: Dos conjuntos son iguales si y sólo si tienen los mismos elementos. Esto define la identidad de un conjunto únicamente por su contenido.
+2.  **Axioma del Conjunto Vacío**: Existe un conjunto sin elementos, denotado por $\emptyset$.
+3.  **Axioma del Par**: Dados dos conjuntos $A$ y $B$, existe un conjunto $\{A, B\}$ que los contiene a ambos.
+4.  **Axioma de la Unión**: Dada una familia de conjuntos, existe un conjunto que contiene todos los elementos que pertenecen a al menos uno de los conjuntos de la familia.
+5.  **Axioma del Conjunto Partes**: Para todo conjunto $A$, existe el conjunto $\mathcal{P}(A)$, cuyas elementos son todos los subconjuntos de $A$.
+6.  **Axioma del Infinito**: Garantiza la existencia de conjuntos infinitos (como el conjunto de los números naturales).
+7.  **Axioma de Especificación**: Para cualquier conjunto $A$ y cualquier propiedad definible $P$, existe un subconjunto de $A$ formado por los elementos que cumplen $P$.
+8.  **Axioma de Fundación (Regularidad)**: Todo conjunto no vacío $A$ contiene un elemento que es disjunto con $A$. Esto evita conjuntos que se contienen a sí mismos.
+
+La adición del **Axioma de Elección (AC)**, formando ZFC, permite realizar selecciones arbitrarias de elementos a partir de una familia infinita de conjuntos no vacíos. Aunque potente, es controvertido por sus consecuencias contraintuitivas (ej. Paradoja de Banach-Tarski).
+
+### B. Categoría Teoría: Más allá de los Objetos
+
+La teoría de categorías no se limita a objetos y morfismos. La noción de **Lema de Yoneda** es fundamental: un objeto está totalmente caracterizado por los morfismos que entran y salen de él.
+
+*   **Límites y Colímites**: Los límites generalizan productos, productos fibrados (pullbacks) y núcleos. Los colímites generalizan sumas directas, pushouts y conúcleos. Un objeto es un límite si satisface una propiedad universal: es el "mejor" objeto que cumple ciertas condiciones de conmutatividad.
+*   **Kan Extensions**: Una generalización de límites y colímites, permitiendo extender funtores de una subcategoría a una categoría más amplia, fundamental en la semántica de lenguajes.
+
+### C. Teoría de Tipos: Parametricidad y Sistemas F
+
+La parametricidad es una propiedad poderosa de las funciones polimórficas (Teorema de Reynolds), donde el comportamiento de una función depende solo de la estructura de sus tipos, no de sus valores, garantizando abstracción.
+
+El **Sistema F (Cálculo Lambda Polimórfico)** permite cuantificación sobre tipos, proporcionando un nivel de expresividad capaz de representar tipos de datos complejos y estructuras de recursión mediante la técnica de Church encoding.
