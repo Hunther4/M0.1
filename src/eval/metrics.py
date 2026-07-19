@@ -10,7 +10,7 @@ def calculate_perplexity(model: Module, input_ids: Tensor, attention_mask: Tenso
     Args:
         model: The language model to evaluate
         input_ids: Token IDs [seq_len] or [batch, seq_len]
-        attention_mask: Optional attention mask
+        attention_mask: Optional attention mask (unused, for API compatibility)
         
     Returns:
         Perplexity as a float
@@ -20,7 +20,7 @@ def calculate_perplexity(model: Module, input_ids: Tensor, attention_mask: Tenso
         if input_ids.dim() == 1:
             input_ids = input_ids.unsqueeze(0)
         
-        logits = model(input_ids, attention_mask=attention_mask)
+        logits = model(input_ids)
         
         # Calculate loss using cross-entropy
         shift_logits = logits[..., :-1, :].contiguous()
@@ -34,13 +34,12 @@ def calculate_perplexity(model: Module, input_ids: Tensor, attention_mask: Tenso
     return perplexity
 
 
-def log_loss(model: Module, input_ids: Tensor, attention_mask: Tensor | None = None) -> dict:
+def log_loss(model: Module, input_ids: Tensor) -> dict:
     """Calculate loss and return with additional metrics.
     
     Args:
         model: The language model to evaluate
         input_ids: Token IDs
-        attention_mask: Optional attention mask
         
     Returns:
         Dictionary with loss, perplexity, and token count
@@ -50,7 +49,7 @@ def log_loss(model: Module, input_ids: Tensor, attention_mask: Tensor | None = N
         if input_ids.dim() == 1:
             input_ids = input_ids.unsqueeze(0)
         
-        logits = model(input_ids, attention_mask=attention_mask)
+        logits = model(input_ids)
         
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = input_ids[..., 1:].contiguous()

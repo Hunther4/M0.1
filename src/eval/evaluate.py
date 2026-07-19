@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from src.eval import calculate_perplexity, coherence_test, niah_test, save_results, setup_logging
 from src.model.lm import TransformerLM
 from src.tokenizer.bpe import Tokenizer
+from src.transformer.config import M01Config
 
 
 def load_checkpoint(checkpoint_path: str, device: str = "cpu") -> dict:
@@ -65,14 +66,21 @@ Examples:
         sys.exit(1)
     
     # Initialize model from checkpoint config
-    config = checkpoint.get("config", {})
-    model = TransformerLM(
-        vocab_size=config.get("vocab_size", 32768),
-        d_model=config.get("d_model", 640),
-        n_heads=config.get("n_heads", 10),
-        n_layers=config.get("n_layers", 12),
-        max_seq_len=config.get("max_seq_len", 8192),
+    config_dict = checkpoint.get("config", {})
+    config = M01Config(
+        vocab_size=config_dict.get("vocab_size", 8192),
+        context_length=config_dict.get("context_length", 256),
+        d_model=config_dict.get("d_model", 256),
+        n_heads=config_dict.get("n_heads", 4),
+        d_ff=config_dict.get("d_ff", 512),
+        n_layers=config_dict.get("n_layers", 4),
+        num_experts=config_dict.get("num_experts", 4),
+        num_shared_experts=config_dict.get("num_shared_experts", 2),
+        moe_top_k=config_dict.get("moe_top_k", 2),
+        use_hybrid_attention=config_dict.get("use_hybrid_attention", True),
+        local_window_size=config_dict.get("local_window_size", 16),
     )
+    model = TransformerLM(config)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.to(args.device)
     model.eval()
