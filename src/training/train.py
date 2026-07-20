@@ -7,6 +7,8 @@ ROCm GPU entry: ``.\\venv_rocm\\Scripts\\python.exe -m src.training.train``
 import argparse
 import sys
 import math
+import time
+import psutil
 import torch
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
@@ -84,7 +86,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--log-interval", type=int, default=10)
     parser.add_argument("--save-interval", type=int, default=1000)
     parser.add_argument("--val-interval", type=int, default=500)
-    parser.add_argument("--resume", action="store_true", help="Resume training from canonical checkpoint")
+    parser.add_argument("--resume", nargs="?", const="__canonical__", default=None,
+                        help="Resume training. No path -> canonical checkpoint of this run; "
+                             "with a path -> stack knowledge on top of that checkpoint file.")
+    parser.add_argument("--vocab-size", type=int, default=16384, help="Model vocab size (must match tokenizer; 16384 = new 16k tokenizer)")
     return parser.parse_args(argv)
 
 
@@ -105,7 +110,7 @@ def main() -> None:
         data_dir=args.data_dir,
     )
 
-    model_config = M01Config()
+    model_config = M01Config(vocab_size=args.vocab_size)
     model = TransformerLM(model_config)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -157,10 +162,33 @@ def main() -> None:
     )
 
     if args.resume:
-        engine.resume()
+        resume_path = None if args.resume == "__canonical__" else args.resume
+        engine.resume(resume_path)
 
+    t_start = time.time()
     summary = engine.fit(max_steps=train_config.max_steps)
-    print(f"\n[COMPLETED] Global steps: {summary['final_step']}, Loss: {summary['final_loss']:.4f}, Total tokens: {summary['total_tokens']:,}")
+    t_end = time.time()
+
+    # Hardware & Speed Stats
+    cpu_usage = psutil.cpu_percent()
+    ram_usage = psutil.virtual_memory().percent
+    vram_mb = torch.cuda.memory_allocated() / 1e6 if torch.cuda.is_available() else 0.0
+    elapsed = t_end - t_start
+
+    # Print validation & performance report
+    print("\n" + "=" * 60)
+    print("           M0.1 — RUN COMPLETION REPORT")
+    print("=" * 60)
+    print(f"  Total steps:       {summary['final_step']}")
+    print(f"  Total tokens seen: {summary['total_tokens']:,}")
+    print(f"  Elapsed time:      {elapsed:.2f} seconds ({elapsed/60:.2f} mins)")
+    print(f"  Final Loss:        {summary['final_loss']:.4f}")
+    print(f"  Final LR:          {scheduler.get_last_lr()[0]:.2e}")
+    print(f"  GPU VRAM:          {vram_mb:.1f} MB")
+    print(f"  CPU Usage:         {cpu_usage:.1f}%")
+    print(f"  RAM Usage:         {ram_usage:.1f}%")
+    print(f"  Run Directory:     {engine.experiment.run_dir}")
+    print("=" * 60)
 
 
 if __name__ == "__main__":

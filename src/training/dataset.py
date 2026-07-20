@@ -43,9 +43,19 @@ class TinyShakespeareDataset:
         tokenizer.load(tokenizer_path)
 
         # Tokenize the full corpus once at init (check subfolder first, fallback to root)
-        text_path = os.path.join(data_dir, "raw_text", "tinyshakespeare.txt")
-        if not os.path.exists(text_path):
-            text_path = os.path.join(data_dir, "tinyshakespeare.txt")
+        text_paths = [
+            os.path.join(data_dir, "raw_text", "spanish_pretrain.txt"),
+            os.path.join(data_dir, "spanish_pretrain.txt"),
+            os.path.join(data_dir, "raw_text", "tinyshakespeare.txt"),
+            os.path.join(data_dir, "tinyshakespeare.txt"),
+        ]
+        text_path = None
+        for path in text_paths:
+            if os.path.exists(path):
+                text_path = path
+                break
+        if text_path is None:
+            raise FileNotFoundError(f"No training text corpus found in {data_dir}")
 
         with open(text_path, "r", encoding="utf-8") as f:
             text = f.read()

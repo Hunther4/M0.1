@@ -74,15 +74,20 @@ def main(argv: list[str] | None = None) -> None:
     model.eval()
 
     # Load trained weights from checkpoint
-    manager = CheckpointManager(os.path.dirname(args.checkpoint))
-    # load from specific path instead of default checkpoint.pt
-    state = torch.load(args.checkpoint, map_location=device, weights_only=True)
+    state = torch.load(args.checkpoint, map_location=device, weights_only=False)
+
+    # Checkpoint stores model weights under model_state (flat dict of tensors)
+    if "model_state" in state:
+        model_sd = state["model_state"]
+        if isinstance(model_sd, dict):
+            state["model_state_dict"] = model_sd
+
     model.load_state_dict(state["model_state_dict"])
-    print(f"Loaded step {state['step']}, loss {state['loss']:.4f}")
+    print(f"Loaded step {state['step']}, loss {state.get('loss', 'N/A')}")
 
     # Load tokenizer
     tokenizer = Tokenizer()
-    tokenizer.load("data/tokenizer.json")
+    tokenizer.load(os.path.join(os.path.dirname(__file__), "..", "..", "data", "splits", "tokenizer.json"))
 
     print(f"\nPrompt: {args.prompt}")
     print("Generating...\n")

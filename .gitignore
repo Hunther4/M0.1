@@ -64,6 +64,18 @@ data/tokenizer.json
 
 # Model checkpoints (too large for git — use releases or external storage)
 checkpoints/
+runs/**/checkpoints/
+*.pt
+*.bin
+runs/**/*.bin
+
+# Raw training data (large, not source)
+data/raw_text/
+data/splits/
+data/splits_*/
+data_archived/
+data/distillation/
+data/Info_Models/
 
 # Evaluation results (generated, not source)
 artifacts/evals/

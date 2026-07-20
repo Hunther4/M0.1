@@ -9,7 +9,6 @@ import torch.nn.functional as F
 
 from src.transformer.config import M01Config
 from src.model.lm import TransformerLM
-from src.training.engine import TrainingEngine
 from src.training.config import TrainingConfig
 from torch.utils.data import DataLoader, TensorDataset
 

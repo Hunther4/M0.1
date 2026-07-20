@@ -68,7 +68,7 @@ Examples:
     # Initialize model from checkpoint config
     config_dict = checkpoint.get("config", {})
     config = M01Config(
-        vocab_size=config_dict.get("vocab_size", 8192),
+        vocab_size=config_dict.get("vocab_size", 16384),
         context_length=config_dict.get("context_length", 256),
         d_model=config_dict.get("d_model", 256),
         n_heads=config_dict.get("n_heads", 4),
@@ -89,8 +89,10 @@ Examples:
     
     # Load tokenizer
     tokenizer = Tokenizer()
-    tokenizer_path = Path("data/tokenizer.json")
-    
+    tokenizer_path = Path("data/tokenizers/tokenizer.json")
+    if not tokenizer_path.exists():
+        tokenizer_path = Path("data/tokenizer.json")
+
     if tokenizer_path.exists():
         tokenizer.load(str(tokenizer_path))
     else:
