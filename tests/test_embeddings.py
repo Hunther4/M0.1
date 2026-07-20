@@ -16,16 +16,16 @@ def test_token_embedding_output_shape():
     assert embeddings.shape == (2, 5, config.d_model)
 
 def test_token_embedding_scaling():
-    """Test that embeddings are scaled by 1/sqrt(d_model)."""
+    """Test embedding scaling matches scale=1.0 (LLaMA-style)."""
     config = M01Config()
     embed = TokenEmbedding(config)
     
     token_ids = torch.tensor([[0]])  # single token
     embeddings = embed(token_ids)
     
-    # The embedding weight for token 0
+    # LLaMA-style: scale=1.0 (no scaling)
     raw_weight = embed.embedding.weight[0]
-    expected = raw_weight * (1.0 / (config.d_model ** 0.5))
+    expected = raw_weight * embed.scale  # scale is 1.0
     
     assert torch.allclose(embeddings[0, 0], expected, atol=1e-5)
 

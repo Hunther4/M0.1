@@ -137,6 +137,7 @@ class CheckpointManager:
         loss: float,
         config: Dict[str, Any],
         epoch: int = 0,
+        **kwargs,
     ) -> None:
         """Save a training checkpoint atomically.
 
@@ -152,6 +153,7 @@ class CheckpointManager:
             config: Model/training configuration dict.
             epoch: Current epoch (default 0).
         """
+        os.makedirs(self.checkpoint_dir, exist_ok=True)
         checkpoint = {
             "epoch": epoch,
             "step": step,
@@ -161,6 +163,8 @@ class CheckpointManager:
             "scheduler_state_dict": scheduler.state_dict(),
             "config": config,
         }
+        if "extra" in kwargs and kwargs["extra"]:
+            checkpoint.update(kwargs["extra"])
 
         tmp_path = os.path.join(self.checkpoint_dir, ".checkpoint.tmp")
         final_path = os.path.join(self.checkpoint_dir, "checkpoint.pt")

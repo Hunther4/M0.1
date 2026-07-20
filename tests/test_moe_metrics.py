@@ -55,24 +55,21 @@ class TestMoELayerAttrStorage:
             f"Expected first dim=4 (num_experts), got {moe.expert_mask.shape[0]}"
         )
 
-    def test_attrs_not_stored_in_eval_mode(self) -> None:
-        """In eval mode, gate_probs/topk_indices/expert_mask MUST NOT be stored
-        (or should be None) since aux_loss is not computed."""
+    def test_attrs_stored_in_eval_mode(self) -> None:
+        """Routing attrs are now always stored (train + eval) for metric access."""
         config = M01Config(num_experts=4, moe_top_k=2)
         moe = MoELayer(config)
         moe.eval()
         x = torch.randn(2, 5, config.d_model)
         _ = moe(x)
-        # In eval mode, the training guard skips the aux_loss block
-        # where we store these attrs, so they should not exist
-        assert not hasattr(moe, "gate_probs"), (
-            "gate_probs should NOT be stored in eval mode"
+        assert hasattr(moe, "gate_probs"), (
+            "gate_probs should be stored even in eval mode"
         )
-        assert not hasattr(moe, "topk_indices"), (
-            "topk_indices should NOT be stored in eval mode"
+        assert hasattr(moe, "topk_indices"), (
+            "topk_indices should be stored even in eval mode"
         )
-        assert not hasattr(moe, "expert_mask"), (
-            "expert_mask should NOT be stored in eval mode"
+        assert hasattr(moe, "expert_mask"), (
+            "expert_mask should be stored even in eval mode"
         )
 
     def test_no_attrs_for_single_expert(self) -> None:
@@ -222,7 +219,7 @@ class TestComputeMoeMetrics:
         assert "global/n_layers_moe" in metrics
         assert "global/mean_entropy" in metrics
         assert "global/router_collapse" in metrics
-        assert "global/total_routed_tokens" in metrics
+        assert "global/mean_gini" in metrics
         assert metrics["global/n_layers_moe"] == 2
 
     def test_entropy_in_bounds(self, moe_model):
@@ -348,14 +345,15 @@ class TestComputeMoeMetrics:
         _ = model(x)
 
         metrics = compute_moe_metrics(model)
-        total_routed = metrics["global/total_routed_tokens"]
         # Collect per-layer histogram sums
         layer_sum = 0
         for key, val in metrics.items():
             if key.endswith("/histogram"):
                 layer_sum += sum(val)
-        assert layer_sum == total_routed, (
-            f"Histogram sum {layer_sum} != total_routed {total_routed}"
+        # Histograms sum across all layers: batch × seq × top_k × n_moe_layers
+        total_tokens = 2 * 8 * 2 * 2  # batch=2, seq=8, top_k=2, n_layers=2
+        assert layer_sum == total_tokens, (
+            f"Histogram sum {layer_sum} != expected {total_tokens}"
         )
 
 
@@ -376,7 +374,10 @@ class TestMetricsLogger:
         metrics = {
             "layer_0/aux_loss": 0.05,
             "layer_0/entropy": 0.42,
+            "global/n_layers_moe": 1,
             "global/mean_entropy": 0.42,
+            "global/mean_gini": 0.25,
+            "global/total_dead": 0,
             "global/router_collapse": False,
         }
         captured = io.StringIO()
@@ -389,8 +390,8 @@ class TestMetricsLogger:
 
         output = captured.getvalue()
         assert "Step 10" in output, f"Should contain step. Got: {output}"
-        assert "aux_loss" in output.lower(), f"Should contain aux_loss. Got: {output}"
-        assert "entropy" in output.lower(), f"Should contain entropy. Got: {output}"
+        assert "Entropy" in output, f"Should contain entropy. Got: {output}"
+        assert "Gini" in output, f"Should contain gini. Got: {output}"
         assert "collapse" in output.lower(), f"Should contain collapse. Got: {output}"
 
     def test_protocol_duck_typing(self):

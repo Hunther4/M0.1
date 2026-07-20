@@ -122,11 +122,11 @@ class TestLMParamCount:
     """Parameter count verification."""
 
     def test_param_count_default_config(self, full_config) -> None:
-        """Default config MUST have exactly 80_461_440 parameters."""
+        """Default config (MoE Stage 1: 4+1 tk1) MUST have 110_225_536 parameters."""
         model = TransformerLM(full_config)
         total = sum(p.numel() for p in model.parameters())
-        assert total == 80_461_440, (
-            f"Expected 80_461_440 params, got {total}"
+        assert total == 110_225_536, (
+            f"Expected 110_225_536 params, got {total}"
         )
 
 

@@ -121,8 +121,9 @@ class TestConfigToDict:
             local_window_size=16,
         )
         result = config_to_dict(config)
-        assert "d_ff_shared" not in result
-        assert "d_ff_routed" not in result
+        # d_ff_shared and d_ff_routed are included when not None
+        assert "d_ff_shared" in result
+        assert "d_ff_routed" in result
 
 
 class TestCheckpoint:
