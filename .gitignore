@@ -91,3 +91,14 @@ logs/
 .env
 .env.local
 .env.*.local
+
+# Entire data tree excluded (large corpora / tokenizer artifacts; not source)
+data/
+
+# Obvious garbage / scratch / tool clutter
+.qwen/
+Local_temporal/
+scratch/
+results/
+artifacts/
+Openspecs_AI/
