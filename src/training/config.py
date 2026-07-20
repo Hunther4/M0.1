@@ -41,3 +41,10 @@ class TrainingConfig:
     save_interval: int = 500
     checkpoint_dir: str = "checkpoints"
     data_dir: str = "data"
+
+    # MoE Runtime Monitoring
+    log_moe_metrics: bool = True
+    moe_collapse_consecutive_steps: int = 50
+    moe_collapse_expert_ratio: float = 0.3
+    log_metrics_backend: str = "console"
+    collapse_streak_threshold: int = 500

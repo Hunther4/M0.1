@@ -155,8 +155,8 @@ class TestTrainingConfigDataclass:
         # Can be used with dataclasses functions
         import dataclasses
         fields = dataclasses.fields(config)
-        assert len(fields) == 14, (
-            f"Expected 14 fields, got {len(fields)}"
+        assert len(fields) == 19, (
+            f"Expected 19 fields, got {len(fields)}"
         )
 
     def test_repr_defaults(self) -> None:

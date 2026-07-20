@@ -39,7 +39,8 @@ class TransformerLM(nn.Module):
         self.config = config
         self.embedding = TokenEmbedding(config)
         self.blocks = nn.ModuleList([
-            TransformerBlock(config) for _ in range(config.n_layers)
+            TransformerBlock(config, force_dense=(i < config.num_dense_layers)) 
+            for i in range(config.n_layers)
         ])
         self.norm = RMSNorm(config.d_model)
 
@@ -76,3 +77,25 @@ class TransformerLM(nn.Module):
 
         # Weight-tied output projection: (batch, seq_len, vocab_size)
         return self.output_head(x)
+
+    def get_aux_loss(self) -> Tensor:
+        """Collect and sum the auxiliary load balancing losses from all child MoELayers."""
+        import torch
+        aux_loss = torch.tensor(0.0, device=self.norm.gamma.device)
+        for block in self.blocks:
+            if hasattr(block.ff, "get_aux_loss"):
+                aux_loss += block.ff.get_aux_loss()
+        return aux_loss
+
+    def get_moe_metrics(self) -> dict:
+        """Compute and return MoE routing metrics for this model.
+
+        Delegates to :func:`src.training.moe_metrics.compute_moe_metrics`.
+        Returns an empty dict when no MoE layers exist or none have been
+        forwarded in training mode yet.
+
+        Returns:
+            dict with per-layer and global metric keys, or {} if no MoE layers.
+        """
+        from src.training.moe_metrics import compute_moe_metrics
+        return compute_moe_metrics(self)

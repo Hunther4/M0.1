@@ -75,6 +75,8 @@ def main():
     target_loss = 0.0290
     step = 0
     start_time = time.time()
+    collapse_streak_threshold = 500  # Configurable collapse detection
+    collapse_counters: dict[str, int] = {}
     
     print(f"\nTraining on GPU. Max steps: {steps}, Target loss: {target_loss}...")
     
@@ -103,6 +105,27 @@ def main():
                 elapsed = time.time() - start_time
                 steps_per_sec = (step + 1) / elapsed
                 print(f"Step {step + 1}/{steps} | Loss: {loss.item():.4f} | Speed: {steps_per_sec:.1f} steps/s | Time: {elapsed:.1f}s")
+                
+                # MoE metrics logging and collapse detection
+                if hasattr(model, "get_moe_metrics"):
+                    metrics = model.get_moe_metrics()
+                    if metrics:
+                        from src.training.moe_metrics import ConsoleLogger, detect_router_collapse
+                        ConsoleLogger().log(metrics, step + 1)
+                        
+                        if collapse_streak_threshold > 0:
+                            for key, val in metrics.items():
+                                if not key.endswith("/histogram"):
+                                    continue
+                                ctr = collapse_counters.get(key, 0)
+                                stop, ctr = detect_router_collapse(val, ctr, collapse_streak_threshold)
+                                collapse_counters[key] = ctr
+                                if stop:
+                                    print(f"Router collapse detected in {key} at step {step + 1}. Stopping training.", flush=True)
+                                    done = True
+                                    break
+                    if done:
+                        break
                 
             step += 1
             

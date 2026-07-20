@@ -1,38 +1,40 @@
-# M0.1-MoE: Reporte Unificado de Arquitectura y SFT
+# M0.2-Hybrid: Reporte Unificado de Arquitectura y SFT
 
-Este es el reporte oficial unificado de la evolución, diseño y resultados del modelo **M0.1-MoE**, entrenado por **Hunther4** en su GPU **AMD Radeon RX 9060XT**.
+Este es el reporte oficial unificado de la evolución, diseño y resultados del modelo **M0.2-Hybrid**, entrenado por **Hunther4** en su GPU **AMD Radeon RX 9060XT**.
 
 ---
 
 ## 1. Ficha Técnica Completa
-*   **Modelo**: M0.1-MoE (Variante Lite de Mezcla de Expertos)
-*   **Parámetros Totales**: 12.56 Millones
-*   **Profundidad (Capas)**: 4 Capas Transformer Decoder
-*   **Ancho de Vector ($d_{model}$)**: 256
-*   **Cabezas de Atención ($n_{heads}$)**: 4 (Dimensión de 64 por cabeza)
+*   **Modelo**: M0.2-Hybrid (Variante Híbrida de Mezcla de Expertos con MLA)
+*   **Parámetros Totales**: 181.46 Millones
+*   **Profundidad (Capas)**: 16 Capas Transformer Decoder (Capas 0 y 1 son FFN densas para estabilizar patrones; capas 2 a 15 son MoE).
+*   **Ancho de Vector ($d_{model}$)**: 320
+*   **Cabezas de Atención ($n_{heads}$)**: 8 (Dimensión de 40 por cabeza)
 *   **Dimensión FFN ($d_{ff}$)**: 512
-*   **Longitud de Contexto**: 256 tokens
-*   **Vocabulario**: 8192 tokens (BPE optimizado para español, modismos y fantasía)
-*   **Posicionamiento**: RoPE (Rotary Positional Embeddings)
+*   **Longitud de Contexto**: 3072 tokens nativos
+*   **Vocabulario**: 8192 tokens (BPE optimizado para español y rolplay sin censura)
+*   **Posicionamiento**: RoPE (Rotary Positional Embeddings) calculado en FP32 para evitar derivas de precisión.
+*   **Normalización**: RMSNorm calculada en FP32 para evitar desbordes en FP16.
 
 ---
 
 ## 2. Configuración de la Mezcla de Expertos (MoE)
-*   **Expertos Totales**: 6 expertos
-*   **Expertos Compartidos**: 2 (Siempre activos para procesar la base común del castellano)
-*   **Expertos Enrutados**: 4 (Especializados semánticamente)
-*   **Ruteo Dinámico (Top-2 Gating)**: Por cada token procesado, una compuerta lineal selecciona activamente a los **2 mejores expertos ruteados** ($moe\_top\_k = 2$), amortizando los costos de inferencia en la GPU.
+*   **Expertos Totales**: 45 expertos
+*   **Expertos Compartidos**: 5 (Siempre activos para procesar la base estructural común del castellano)
+*   **Expertos Enrutados**: 40 (Especialistas semánticamente en rolplay, narrativa, lógica, etc.)
+*   **Ruteo Dinámico (Top-4 Gating)**: Por cada token, el router selecciona activamente a los **4 mejores expertos ruteados** ($moe\_top\_k = 4$).
+*   **Balanceo de Carga**: Loss Auxiliar de 0.1 * Aux_Loss para evitar colapsar el router durante ráfagas de entrenamiento continuo.
 
 ---
 
-## 3. Atención Híbrida (CSA + HCA)
-*   **Compressed Sparse Attention (CSA)**: Comprime la memoria KV de los tokens locales de la secuencia a **128 dimensiones** para garantizar una sintaxis y deletreo precisos a corto plazo.
-*   **Heavily Compressed Attention (HCA)**: Comprime la memoria KV de los tokens históricos lejanos a **32 dimensiones**, optimizando el espacio del KV Cache de forma extrema.
+## 3. Multi-head Latent Attention (MLA)
+*   **Compresión de Baja Dimensión**: Comprime la clave (Key) y el valor (Value) de los tokens en un vector latente de baja dimensión ($d_c = 128$), reduciendo drásticamente la huella de memoria del KV cache.
+*   **Proyección Separada de Posición**: Extrae 16 dimensiones por cabeza para ser rotadas dinámicamente usando RoPE en FP32, permitiendo un escalamiento limpio hasta 3072 tokens nativos de contexto sin pérdida de relación de posición.
 
 ---
 
-## 4. Alineación e Identidad Agéntica (SFT)
-A través de un entrenamiento quirúrgico en GPU, M0.1-MoE consolidó las siguientes capacidades:
-1.  **Identidad Fuerte**: Se reconoce a sí mismo como "M0.1-MoE", desarrollado por Hunther4 en una GPU AMD Radeon RX 9060XT (aclarando que corre en el sistema local actual).
-2.  **Resistencia al Gaslighting**: Entrenado con 4500 pasos de defensa conversacional, el modelo mantiene la calma e identidad ante preguntas y ataques manipuladores sin colapsar.
-3.  **Comprensión de Jergas sin Filtro**: Entiende de forma neutra y asertiva expresiones coloquiales fuertes (ej. *LPTM*, *mierda*, *concha*), permitiéndose usarlas de forma adaptativa si el usuario las emplea, sin caer en censura moral artificial.
+## 4. Filosofía del Entrenamiento Acumulativo
+M0.2-Hybrid se entrena mediante sesiones secuenciales y acotadas en tiempo de 28-30 minutos utilizando el script `train_session_continual.py`. Cada sesión:
+1. Retoma el entrenamiento cargando `m01_180m_latest.pt` (pesos + optimizador AdamW + programadores de escala).
+2. Entrena en ráfagas acumulando conocimiento sobre la misma base estructural.
+3. Guarda snapshots permanentes de seguridad (`m01_180m_milestone_XXXXXX.pt`) cada 5000 pasos.

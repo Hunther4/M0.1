@@ -52,19 +52,16 @@ class RotaryPositionalEmbedding(nn.Module):
         """
         batch, seq_len, n_heads, d_head = x.shape
         
-        # Create position indices: [offset, offset+1, ..., offset+seq_len-1]
+        # Create position indices: [offset, offset+1, ..., offset+seq_len-1] in FP32
         positions = torch.arange(offset, offset + seq_len, device=x.device).float()
         
-        # Compute angles: positions * freqs
-        # positions: (seq_len,) → (seq_len, 1)
-        # freqs: (d_head//2,) → (1, d_head//2)
-        # angles: (seq_len, d_head//2)
-        angles = positions.unsqueeze(1) * self.freqs.unsqueeze(0)
+        # Compute angles in FP32 using freqs sliced to match input head dimension
+        freqs_sliced = self.freqs[:d_head // 2].float()
+        angles = positions.unsqueeze(1) * freqs_sliced.unsqueeze(0)
         
-        # Compute sin and cos
-        # Both: (seq_len, d_head//2)
-        sin = torch.sin(angles)
-        cos = torch.cos(angles)
+        # Compute sin and cos in FP32, then cast to input's dtype
+        sin = torch.sin(angles).to(x.dtype)
+        cos = torch.cos(angles).to(x.dtype)
         
         # Reshape for broadcasting: (1, seq_len, 1, d_head//2)
         sin = sin.unsqueeze(0).unsqueeze(2)

@@ -35,7 +35,8 @@ class RMSNorm(nn.Module):
         Returns:
             Normalized tensor of the same shape
         """
-        # Compute RMS along last dimension: sqrt(mean(x^2) + eps)
-        rms = torch.sqrt(torch.mean(x ** 2, dim=-1, keepdim=True) + self.eps)
-        # Normalize and scale
-        return (x / rms) * self.gamma
+        # Compute RMS along last dimension in FP32 to avoid FP16 overflow
+        x_fp32 = x.float()
+        rms = torch.sqrt(torch.mean(x_fp32 ** 2, dim=-1, keepdim=True) + self.eps)
+        # Normalize, cast back to input dtype, and scale
+        return (x_fp32 / rms).to(x.dtype) * self.gamma

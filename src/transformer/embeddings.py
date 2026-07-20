@@ -28,8 +28,8 @@ class TokenEmbedding(nn.Module):
         # Embedding matrix: vocab_size × d_model
         self.embedding = nn.Embedding(config.vocab_size, config.d_model)
         
-        # Scaling factor: 1/√d_model
-        self.scale = 1.0 / (config.d_model ** 0.5)
+        # Scaling factor (default to 1.0 to match standard LLaMA embedding dynamics)
+        self.scale = 1.0
         
         # Initialize weights (optional, can use default)
         nn.init.normal_(self.embedding.weight, mean=0.0, std=0.02)

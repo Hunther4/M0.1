@@ -41,6 +41,14 @@ class M01Config:
     local_window_size: int = 64
     dropout: float = 0.0
 
+    # MLA (Multi-head Latent Attention) Configuration
+    use_mla: bool = True
+    mla_kv_c_dim: int = 128
+    mla_rope_dim: int = 16  # RoPE dimension per head
+
+    # Dense layers layout configuration (number of dense layers before MoE starts)
+    num_dense_layers: int = 2
+
     def __post_init__(self) -> None:
         """Validate configuration after initialization."""
         # Ensure d_model is divisible by n_heads
@@ -51,3 +59,11 @@ class M01Config:
         
         # Compute head dimension
         self.d_head = self.d_model // self.n_heads  # 64 for default config
+        
+        if self.use_mla:
+            if self.mla_rope_dim >= self.d_head:
+                raise ValueError(
+                    f"mla_rope_dim ({self.mla_rope_dim}) must be less than d_head ({self.d_head})"
+                )
+            self.d_head_rope = self.mla_rope_dim
+            self.d_head_no_rope = self.d_head - self.d_head_rope

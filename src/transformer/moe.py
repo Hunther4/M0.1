@@ -66,6 +66,9 @@ class MoELayer(nn.Module):
         for expert in self.shared_experts:
             shared_out += expert(x_flat)
             
+        # Initialize default aux loss
+        self.current_aux_loss = torch.tensor(0.0, device=x.device, dtype=x.dtype)
+
         # 2. Handle routed experts
         if self.num_experts <= 1:
             # Fallback if there is only 1 expert
@@ -81,9 +84,23 @@ class MoELayer(nn.Module):
         k = min(self.moe_top_k, self.num_experts)
         topk_probs, topk_indices = torch.topk(gate_probs, k=k, dim=-1)
         
-        # Re-normalize top-k probabilities to sum to 1
-        topk_probs = topk_probs / (topk_probs.sum(dim=-1, keepdim=True) + 1e-9)
+        # Re-normalize top-k probabilities to sum to 1 (with FP16-safe epsilon)
+        topk_probs = topk_probs / (topk_probs.sum(dim=-1, keepdim=True) + 1e-5)
         
+        # 3. Compute auxiliary load balancing loss to prevent routing collapse
+        if self.training:
+            num_tokens = x_flat.size(0)
+            # expert_mask: (num_experts, num_tokens)
+            expert_mask = torch.zeros(self.num_experts, num_tokens, device=x.device, dtype=x.dtype)
+            expert_mask.scatter_(0, topk_indices.t(), 1.0)
+            # Store intermediates for monitoring/metrics
+            self.gate_probs = gate_probs
+            self.topk_indices = topk_indices
+            self.expert_mask = expert_mask
+            f = expert_mask.mean(dim=1)  # (num_experts,)
+            P = gate_probs.mean(dim=0)   # (num_experts,)
+            self.current_aux_loss = self.num_experts * torch.sum(f * P)
+
         routed_out = torch.zeros_like(x_flat)
         
         # Route tokens to their selected experts
@@ -108,3 +125,7 @@ class MoELayer(nn.Module):
         output = shared_out + routed_out
         
         return output.view(batch_size, seq_len, d_model)
+
+    def get_aux_loss(self) -> torch.Tensor:
+        """Return the auxiliary load balancing loss calculated during the last forward pass."""
+        return getattr(self, "current_aux_loss", torch.tensor(0.0, device=self.gate.weight.device))

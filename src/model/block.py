@@ -26,7 +26,7 @@ class TransformerBlock(nn.Module):
         config: M01Config with d_model, n_heads, d_ff, num_experts
     """
 
-    def __init__(self, config: M01Config) -> None:
+    def __init__(self, config: M01Config, force_dense: bool = False) -> None:
         super().__init__()
 
         # Pre-norm self-attention
@@ -38,7 +38,7 @@ class TransformerBlock(nn.Module):
 
         # Dropout applied after attention and FF sublayers
         self.dropout = nn.Dropout(config.dropout)
-        if config.num_experts > 1:
+        if config.num_experts > 1 and not force_dense:
             self.ff = MoELayer(config)
         else:
             self.ff = FeedForward(config)

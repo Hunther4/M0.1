@@ -1,6 +1,6 @@
 """Key-Value Cache for Autoregressive Generation.
 
-Separate KVCache class for storing past key/value tensors during autoregressive generation.
+Stores past key/value tensors during autoregressive generation.
 Pre-allocates buffers to avoid repeated torch.cat operations.
 """
 
@@ -11,8 +11,8 @@ from typing import Tuple
 class KVCache:
     """Key-Value Cache for storing past attention states.
     
-    Pre-allocates buffers of size (1, max_seq_len, n_heads, d_head) for K and V.
-    During generation, new K/V are appended at the current position.
+    Pre-allocates buffers of size (batch_size, max_seq_len, n_heads, d_head) for K and V.
+    Supports dynamic batch resizing if needed.
     """
     
     def __init__(self, max_seq_len: int, n_heads: int, d_head: int, device: torch.device | None = None) -> None:
@@ -29,8 +29,7 @@ class KVCache:
         self.d_head = d_head
         self.device = device or torch.device("cpu")
         
-        # Pre-allocate K and V buffers with zeros
-        # Shape: (1, max_seq_len, n_heads, d_head)
+        # Pre-allocate K and V buffers with zeros (default batch_size = 1, expands dynamically)
         self.k = torch.zeros(1, max_seq_len, n_heads, d_head, device=self.device)
         self.v = torch.zeros(1, max_seq_len, n_heads, d_head, device=self.device)
         
@@ -41,19 +40,26 @@ class KVCache:
         """Append new K/V tensors to cache and return full cached tensors.
         
         Args:
-            k: New key tensor of shape (batch, 1, n_heads, d_head)
-            v: New value tensor of shape (batch, 1, n_heads, d_head)
+            k: New key tensor of shape (batch, seq_len, n_heads, d_head)
+            v: New value tensor of shape (batch, seq_len, n_heads, d_head)
             
         Returns:
             Tuple of (full_k, full_v) tensors up to current length
         """
         batch_size = k.shape[0]
-        if batch_size != 1:
-            raise ValueError(f"Batch size must be 1 for KV cache, got {batch_size}")
-            
         new_len = k.shape[1]
+        
+        # Dynamically adjust batch size if it doesn't match the cache allocation
+        if self.k.shape[0] != batch_size:
+            self.k = torch.zeros(batch_size, self.max_seq_len, self.n_heads, self.d_head, device=self.device, dtype=k.dtype)
+            self.v = torch.zeros(batch_size, self.max_seq_len, self.n_heads, self.d_head, device=self.device, dtype=v.dtype)
+            self._seq_len = 0
+            
         if self._seq_len + new_len > self.max_seq_len:
-            raise ValueError(f"KV cache capacity exceeded: cached {self._seq_len + new_len} tokens, max capacity is {self.max_seq_len}")
+            raise ValueError(
+                f"KV cache capacity exceeded: cached {self._seq_len + new_len} tokens, "
+                f"max capacity is {self.max_seq_len}"
+            )
         
         # Store at current position
         self.k[:, self._seq_len:self._seq_len + new_len] = k

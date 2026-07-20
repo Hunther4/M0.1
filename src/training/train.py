@@ -10,6 +10,8 @@ the autoregressive language model training loop in fp32.
 import argparse
 import math
 import sys
+import time
+import signal
 from typing import Any, Dict, Optional
 
 import torch
@@ -87,10 +89,51 @@ def get_lr_scheduler(
         if step < warmup_steps:
             return step / max(warmup_steps, 1)
         progress = (step - warmup_steps) / max(max_steps - warmup_steps, 1)
+        # Avoid cosine overflow if step exceeds max_steps
+        progress = min(progress, 1.0)
         cosine_decay = 0.5 * (1.0 + math.cos(math.pi * progress))
         return min_lr_ratio + (1.0 - min_lr_ratio) * cosine_decay
 
     return LambdaLR(optimizer, lr_lambda)
+
+
+def evaluate_validation(
+    model: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    vocab_size: int,
+) -> float:
+    """Run validation evaluation to compute loss and perplexity.
+
+    Args:
+        model: TransformerLM instance in evaluation mode.
+        loader: DataLoader for validation dataset.
+        device: CUDA/ROCm/CPU device.
+        vocab_size: Size of model vocabulary.
+
+    Returns:
+        Average cross entropy loss.
+    """
+    model.eval()
+    total_loss = 0.0
+    steps = 0
+    
+    with torch.no_grad():
+        for x, y in loader:
+            x, y = x.to(device), y.to(device)
+            with torch.amp.autocast(device_type=device.type, enabled=(device.type == "cuda")):
+                logits = model(x)
+                loss = F.cross_entropy(
+                    logits.view(-1, vocab_size),
+                    y.view(-1),
+                )
+            total_loss += loss.item()
+            steps += 1
+            if steps >= 50:  # Cap validation steps for speed
+                break
+                
+    model.train()
+    return total_loss / max(steps, 1)
 
 
 def train(
@@ -111,15 +154,30 @@ def train(
     # --- Build model, dataset, dataloader ---
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = TransformerLM(model_config).to(device)
-    dataset = TinyShakespeareDataset(config)
+    
+    # Load dataset & create validation split (95/5 train/val split)
+    full_dataset = TinyShakespeareDataset(config)
+    train_size = int(0.95 * len(full_dataset))
+    val_size = len(full_dataset) - train_size
+    train_dataset, val_dataset = torch.utils.data.random_split(full_dataset, [train_size, val_size])
+
     loader = DataLoader(
-        dataset,
+        train_dataset,
         batch_size=config.batch_size,
         shuffle=True,
         drop_last=True,
-        num_workers=0,
+        num_workers=4,  # Parallelized data loading for Ryzen 7600X
+        pin_memory=(device.type == "cuda"),  # Kept (verifying ROCm host-to-device bandwidth)
+    )
+    
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=config.batch_size,
+        shuffle=False,
+        num_workers=4,
         pin_memory=(device.type == "cuda"),
     )
+    
     data_iter = iter(loader)
 
     # --- Optimizer and scheduler ---
@@ -135,6 +193,7 @@ def train(
     checkpoint_manager = CheckpointManager(config.checkpoint_dir)
 
     start_step = 0
+    best_val_loss = float("inf")
 
     # --- Resume from checkpoint if provided ---
     if resume_checkpoint is not None:
@@ -142,14 +201,37 @@ def train(
         state = alt_manager.load(model, optimizer, scheduler)
         start_step = state["step"] + 1
 
-    # --- AMP Gradient Scaler ---
-    scaler = torch.cuda.amp.GradScaler(enabled=(device.type == "cuda"))
+    # --- AMP Generic GradScaler (migrating from cuda.amp to amp) ---
+    scaler = torch.amp.GradScaler(enabled=(device.type == "cuda"))
+
+    # --- Signal Handler for Graceful SIGINT Saving ---
+    interrupted = False
+    
+    def sigint_handler(signum, frame):
+        nonlocal interrupted
+        print("\n[SIGINT] Catching interrupt signal. Saving checkpoint before exit...", flush=True)
+        interrupted = True
+
+    signal.signal(signal.SIGINT, sigint_handler)
 
     # --- Training loop ---
     model.train()
     step_loss: float = 0.0
+    start_time = time.time()
 
     for step in range(start_step, config.max_steps):
+        if interrupted:
+            checkpoint_manager.save(
+                step=step,
+                model=model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                loss=step_loss,
+                config=model_config.__dict__,
+            )
+            print("[INFO] Checkpoint saved successfully. Exiting gracefully.", flush=True)
+            sys.exit(0)
+
         # Get next batch (restart iterator if exhausted)
         try:
             x, y = next(data_iter)
@@ -159,18 +241,23 @@ def train(
 
         # Move data to device
         x, y = x.to(device), y.to(device)
+        step_start = time.time()
 
         # Forward with autocast
         with torch.amp.autocast(device_type=device.type, enabled=(device.type == "cuda")):
             logits = model(x)
-            loss = F.cross_entropy(
+            ce_loss = F.cross_entropy(
                 logits.view(-1, model_config.vocab_size),
                 y.view(-1),
             )
+            # Retrieve MoE auxiliary load balancing loss to prevent routing collapse
+            router_aux_loss = model.get_aux_loss()
+            loss = ce_loss + router_aux_loss
 
         # Backward with scaling
         scaler.scale(loss).backward()
-        step_loss = loss.item()
+        step_loss = ce_loss.item()
+        aux_loss_val = router_aux_loss.item()
 
         # Non-finite loss guard (NaN or Inf) — check BEFORE optimizer.step
         if not math.isfinite(step_loss):
@@ -191,21 +278,71 @@ def train(
         scaler.step(optimizer)
         scaler.update()
         scheduler.step()
-        optimizer.zero_grad()
+        
+        # zero_grad with set_to_none=True to conserve memory (recommended by PyTorch)
+        optimizer.zero_grad(set_to_none=True)
+
+        step_time = time.time() - step_start
 
         # Logging
         if (step + 1) % config.log_interval == 0:
             lr = scheduler.get_last_lr()[0]
+            
+            # Throughput & ETA metrics
+            tokens_per_sec = (config.batch_size * config.seq_len) / max(step_time, 1e-6)
+            samples_per_sec = config.batch_size / max(step_time, 1e-6)
+            remaining_steps = config.max_steps - (step + 1)
+            eta_seconds = remaining_steps * step_time
+            eta_hours = eta_seconds / 3600
+            
+            # VRAM Memory utilization
+            vram_mb = torch.cuda.max_memory_allocated() / 1e6 if device.type == "cuda" else 0.0
+            
+            # Retrieve routing metrics if present
+            router_entropy = 0.0
+            expert_usage = []
+            for block in model.blocks:
+                if hasattr(block.ff, "gate_probs"):
+                    probs = block.ff.gate_probs
+                    entropy = -torch.sum(probs * torch.log(probs + 1e-8), dim=-1).mean().item()
+                    router_entropy += entropy
+                    
+                    mask = block.ff.expert_mask
+                    expert_usage.append(mask.sum(dim=1))
+            
+            router_entropy_avg = router_entropy / max(len(expert_usage), 1)
+            
+            # Compute routing standard deviation and dead experts count
+            expert_std = 0.0
+            dead_experts = 0
+            if expert_usage:
+                stacked_usage = torch.stack(expert_usage)
+                expert_std = stacked_usage.std(dim=-1).mean().item()
+                dead_experts = int((stacked_usage == 0).sum().item() / len(expert_usage))
+
             print(
                 f"step {step + 1:>6d} | "
                 f"loss {step_loss:.4f} | "
+                f"aux {aux_loss_val:.4f} | "
                 f"lr {lr:.2e} | "
-                f"norm {total_norm:.1f}",
+                f"norm {total_norm:.1f} | "
+                f"tok/s {tokens_per_sec:.0f} | "
+                f"VRAM {vram_mb:.0f}MB | "
+                f"entropy {router_entropy_avg:.2f} | "
+                f"std {expert_std:.1f} | "
+                f"dead {dead_experts} | "
+                f"scale {scaler.get_scale():.0f} | "
+                f"ETA {eta_hours:.1f}h",
                 flush=True,
             )
 
-        # Checkpoint save
+        # Checkpoint save (incorporating validation evaluation)
         if (step + 1) % config.save_interval == 0:
+            val_loss = evaluate_validation(model, val_loader, device, model_config.vocab_size)
+            val_ppl = math.exp(min(val_loss, 50.0))
+            print(f"[VAL] Step {step + 1} | Val Loss: {val_loss:.4f} | Val PPL: {val_ppl:.2f}", flush=True)
+
+            # Save latest checkpoint
             checkpoint_manager.save(
                 step=step,
                 model=model,
@@ -214,6 +351,24 @@ def train(
                 loss=step_loss,
                 config=model_config.__dict__,
             )
+
+            # Save best checkpoint
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                best_path = os.path.join(config.checkpoint_dir, "best.pt")
+                torch.save(
+                    {
+                        "step": step,
+                        "loss": step_loss,
+                        "val_loss": val_loss,
+                        "model_state_dict": model.state_dict(),
+                        "optimizer_state_dict": optimizer.state_dict(),
+                        "scheduler_state_dict": scheduler.state_dict(),
+                        "config": model_config.__dict__,
+                    },
+                    best_path,
+                )
+                print(f"[CHECKPOINT] New best validation checkpoint saved to {best_path}", flush=True)
 
     return {"step": step, "loss": step_loss}
 
