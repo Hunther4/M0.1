@@ -33,7 +33,7 @@ The architecture incorporates techniques from state-of-the-art models:
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| `vocab_size` | 32,768 | Vocabulary size (BPE tokenizer) |
+| `vocab_size` | 16,384 | Vocabulary size (BPE tokenizer) |
 | `context_length` | 8,192 | Maximum sequence length |
 | `d_model` | 640 | Embedding / hidden dimension |
 | `n_heads` | 10 | Number of attention heads |
@@ -147,7 +147,7 @@ The embedding matrix is shared between the input embedding layer and the output 
 - Input: `Embedding(vocab_size, d_model)` maps token IDs to dense vectors.
 - Output: A linear projection using `embedding.weight` (transposed) maps hidden states to vocabulary logits.
 
-This saves approximately 21 million parameters (`vocab_size * d_model = 32,768 * 640 = 20.97M`) and provides a single gradient signal through the embedding matrix, which acts as a regularizer and often improves convergence.
+This saves approximately 10.5 million parameters (`vocab_size * d_model = 16,384 * 640 = 10.5M`) and provides a single gradient signal through the embedding matrix, which acts as a regularizer and often improves convergence.
 
 ### Rotary Position Embeddings (RoPE)
 

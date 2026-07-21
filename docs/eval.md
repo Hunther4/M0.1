@@ -2,29 +2,38 @@
 
 Evaluation tools for the M0.1 model.
 
-## Overview
+## Tokenizer & Vocab (important)
 
-The evaluation suite provides quantitative metrics and qualitative benchmarks for model checkpoints.
+`evaluate.py` reconstructs the model from the checkpoint's embedded `config` dict, then loads the
+**real tokenizer**:
+
+- **Tokenizer path:** `data/tokenizers/tokenizer.json` (fallback: `data/tokenizer.json`).
+- **Vocab size:** taken from the checkpoint's `config.vocab_size`; if absent, **defaults to `16384`**.
+- There is **no 32k tokenizer** — the only tokenizer is the 16k one used in training.
+
+> ⚠️ The eval model is built with `M01Config(vocab_size=config_dict.get("vocab_size", 16384), …)`.
+> If a checkpoint was trained with `vocab_size=16384` (the validated default), evaluation must use the
+> same 16k tokenizer, or token IDs will not align.
 
 ## Quick Start
 
 ```bash
-# Run basic perplexity evaluation
-python src/eval/evaluate.py --checkpoint checkpoints/model.pt
+# Basic perplexity evaluation
+python src/eval/evaluate.py --checkpoint runs/run_test/checkpoints/checkpoint.pt
 
-# Run with coherence and NIAH benchmarks
-python src/eval/evaluate.py --checkpoint checkpoints/model.pt --coherence --niah
+# With coherence and NIAH benchmarks
+python src/eval/evaluate.py --checkpoint runs/run_test/checkpoints/checkpoint.pt --coherence --niah
 
-# Verbose output
-python src/eval/evaluate.py --checkpoint checkpoints/model.pt --verbose
+# Verbose
+python src/eval/evaluate.py --checkpoint runs/run_test/checkpoints/checkpoint.pt --verbose
 ```
 
 ## CLI Options
 
 | Option | Description |
 |--------|-------------|
-| `--checkpoint PATH` | Path to model checkpoint (required) |
-| `--dataset PATH` | Validation dataset path (default: data/tiny_shakespeare_val.txt) |
+| `--checkpoint PATH` | Path to model checkpoint `.pt` (required) |
+| `--dataset PATH` | Validation dataset path (default: `data/tiny_shakespeare_val.txt`) |
 | `--coherence` | Run coherence benchmark |
 | `--niah` | Run Needle-in-a-Haystack benchmark |
 | `--device DEVICE` | Device to use: cuda/cpu (default: auto-detect) |
@@ -37,7 +46,7 @@ Evaluation results are saved to `artifacts/evals/results_<timestamp>.json`:
 ```json
 {
   "timestamp": "2026-07-18T10:00:00Z",
-  "checkpoint": "checkpoints/model.pt",
+  "checkpoint": "runs/run_test/checkpoints/checkpoint.pt",
   "metrics": {
     "perplexity": 15.234
   },
@@ -60,16 +69,12 @@ Evaluation results are saved to `artifacts/evals/results_<timestamp>.json`:
 
 ### Generate Report
 
-Convert evaluation JSON to Markdown:
-
 ```bash
 python scripts/generate_report.py --eval artifacts/evals/results_xxx.json
 python scripts/generate_report.py --eval results.json --output report.md
 ```
 
 ### Compare Checkpoints
-
-Compare two evaluation runs:
 
 ```bash
 python scripts/compare.py --json1 eval1.json --json2 eval2.json
@@ -97,6 +102,6 @@ src/eval/
 ├── __init__.py      # Package exports
 ├── utils.py         # Logging, JSON saving
 ├── metrics.py       # Perplexity, loss calculation
-├── qa.py           # Coherence, NIAH benchmarks
-└── evaluate.py     # CLI entry point
+├── qa.py            # Coherence, NIAH benchmarks
+└── evaluate.py      # CLI entry point
 ```

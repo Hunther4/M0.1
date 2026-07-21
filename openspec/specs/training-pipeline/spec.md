@@ -2,13 +2,27 @@
 
 ## Overview
 
-Training pipeline for M0.1 including hyperparameter configuration (TrainingConfig), sliding-window dataset (TinyShakespeareDataset), atomic checkpointing (CheckpointManager), and the full training loop CLI with AdamW optimizer, cosine LR schedule, and gradient clipping. All training runs in fp32 on a single device.
+Training pipeline for M0.1, built on `TrainingEngineV2` (`src/engine_v2/engine.py`) — an FSM-driven
+engine using `AdamW`, a cosine LR schedule with linear warmup, gradient clipping, EMA, AMP (mixed
+precision via `AMPContext`), and atomic async checkpointing (`AsyncCheckpointManagerV2`).
+
+**Tokenization is fixed to a single 16k tokenizer:** `data/tokenizers/tokenizer.json` (vocab 16384,
+SHA-256 prefix `6bc3a6…`). There is **no 32k tokenizer**. `M01Config.vocab_size` MUST be 16384 to
+match it (call-sites pass this explicitly when a non-default tokenizer is used).
+
+**Training strategy is layer-stacking:** the full model is trained by building a base checkpoint, then
+resuming (`--resume <path>`) to stack knowledge across runs, because the full model cannot be trained
+in a single pass.
+
+VRAM is reported via `torch.cuda.memory_reserved()` (≈11 GB at batch 16); `memory_allocated()`
+(≈2.2 GB) is misleading and MUST NOT be used.
 
 ## Requirements
 
 ### Requirement: TrainingConfig Dataclass
 
-The system MUST provide a `TrainingConfig` dataclass in `src/training/config.py` with all training hyperparameters as fields with defaults.
+The system MUST provide a `TrainingConfig` dataclass in `src/training/config.py` with all training
+hyperparameters as fields with defaults.
 
 **Fields and Defaults:**
 
@@ -34,11 +48,11 @@ The system MUST provide a `TrainingConfig` dataclass in `src/training/config.py`
 - **Given** `TrainingConfig()`, **When** instantiated with no arguments, **Then** all 14 fields MUST have the default values listed above.
 - **Given** `TrainingConfig(batch_size=8, max_lr=1e-3)`, **When** instantiated, **Then** `batch_size` MUST be 8, `max_lr` MUST be `1e-3`, and all other fields MUST retain their defaults.
 - **Given** `TrainingConfig`, **When** `batch_size` is accessed, **Then** it MUST be type `int`, `max_lr` MUST be type `float`, `checkpoint_dir` MUST be type `str`.
-- **Given** `TrainingConfig`, **When** inspected, **Then** it MUST be a `dataclass` with `__repr__` and field equality.
 
 ### Requirement: TinyShakespeareDataset
 
-The system MUST provide a `TinyShakespeareDataset` class in `src/training/dataset.py` that provides sliding-window (input, target) pairs over the TinyShakespeare corpus.
+The system MUST provide a `TinyShakespeareDataset` class in `src/training/dataset.py` that provides
+sliding-window (input, target) pairs over the TinyShakespeare corpus.
 
 **Interface:**
 ```python
@@ -51,97 +65,164 @@ class TinyShakespeareDataset:
 **Scenarios:**
 
 - **Given** a `TinyShakespeareDataset` with `seq_len=1024`, **When** `len()` is called, **Then** it MUST be positive.
-- **Given** a `TinyShakespeareDataset`, **When** `len()` is called, **Then** it MUST equal `total_tokens - seq_len`.
-- **Given** a `TinyShakespeareDataset`, **When** `__getitem__(idx)` is called, **Then** it MUST return a tuple of `(input, target)`.
-- **Given** a `TinyShakespeareDataset`, **When** `__getitem__(idx)` is called, **Then** `input` MUST be a `torch.long` tensor.
-- **Given** a `TinyShakespeareDataset`, **When** `__getitem__(idx)` is called, **Then** `target` MUST be a `torch.long` tensor.
-- **Given** a `TinyShakespeareDataset`, **When** `__getitem__(idx)` is called, **Then** `input` shape MUST be `(seq_len,)`.
-- **Given** a `TinyShakespeareDataset`, **When** `__getitem__(idx)` is called, **Then** `target` shape MUST be `(seq_len,)`.
-- **Given** a `TinyShakespeareDataset`, **When** `__getitem__(idx)` is called, **Then** `target[t]` MUST equal `input[t+1]` for all `t` (autoregressive shift).
-- **Given** a `TinyShakespeareDataset`, **When** `__getitem__` is called with two different indices, **Then** the returned pairs MUST differ.
-- **Given** a `TinyShakespeareDataset`, **When** `__getitem__(len-1)` is called, **Then** it MUST NOT raise IndexError.
-- **Given** a `TinyShakespeareDataset` wrapped in a `DataLoader(batch_size=4, num_workers=0)`, **When** iterated, **Then** batches MUST have shape `(4, seq_len)` for both input and target.
-- **Given** a `TinyShakespeareDataset` with `DataLoader(num_workers=0)`, **When** a single batch is fetched, **Then** it MUST work without deadlock or error.
+- **Given** a `TinyShakespeareDataset`, **When** `__getitem__(idx)` is called, **Then** it MUST return a tuple of `(input, target)` of shape `(seq_len,)` as `torch.long` tensors with `target[t] == input[t+1]`.
 
-### Requirement: CheckpointManager
+### Requirement: 16k Tokenizer Source of Truth
 
-The system MUST provide a `CheckpointManager` class in `src/training/checkpoint.py` for atomic save/load of training state.
-
-**Interface:**
-```python
-class CheckpointManager:
-    def __init__(self, checkpoint_dir: str) -> None: ...
-    def save(self, step: int, model: nn.Module, optimizer: optim.Optimizer,
-             scheduler: optim.lr_scheduler.LRScheduler, loss: float,
-             config: dict, epoch: int = 0) -> None: ...
-    def load(self, model: nn.Module, optimizer: optim.Optimizer,
-             scheduler: optim.lr_scheduler.LRScheduler) -> dict: ...
-```
+The training pipeline MUST use exactly one tokenizer: `data/tokenizers/tokenizer.json` (vocab size
+16384). No 32k tokenizer exists.
 
 **Scenarios:**
 
-- **Given** a `CheckpointManager` with a new directory path, **When** instantiated, **Then** the directory MUST be created automatically.
-- **Given** a `CheckpointManager` with an existing directory, **When** instantiated, **Then** it MUST accept the existing directory without error.
-- **Given** a `CheckpointManager`, **When** `save()` is called, **Then** a `checkpoint.pt` file MUST exist in the checkpoint directory.
-- **Given** a `CheckpointManager`, **When** `save()` is called, **Then** no `.checkpoint.tmp` file MUST remain (cleanup after atomic write).
-- **Given** a `CheckpointManager`, **When** `save()` is called, **Then** the saved checkpoint dict MUST contain exactly these keys: `epoch`, `step`, `loss`, `model_state_dict`, `optimizer_state_dict`, `scheduler_state_dict`, `config`.
-- **Given** a `CheckpointManager`, **When** `save(step=99)` is called, **Then** the saved checkpoint's `step` MUST be 99.
-- **Given** a `CheckpointManager`, **When** `save(loss=3.14159)` is called, **Then** the saved checkpoint's `loss` MUST be 3.14159.
-- **Given** a `CheckpointManager`, **When** `save()` is called, **Then** it MUST use atomic write: write to `.checkpoint.tmp` first, then `os.replace()` to `checkpoint.pt`.
-- **Given** a `CheckpointManager`, **When** `load()` is called after `save()`, **Then** it MUST return a dict with `epoch`, `step`, `loss`, and `config` keys.
-- **Given** a `CheckpointManager`, **When** `save()` then `load()` is called, **Then** the model weights MUST match the saved weights (save → modify model → load restores original).
-- **Given** a `CheckpointManager`, **When** `save()` then `load()` is called, **Then** the optimizer state MUST be restored.
-- **Given** a `CheckpointManager`, **When** `save()` then `load()` is called, **Then** the scheduler state MUST be restored.
-- **Given** a `CheckpointManager` with no saved checkpoint, **When** `load()` is called, **Then** it MUST raise `FileNotFoundError`.
+- **Given** `train.py` is launched, **When** it loads a tokenizer, **Then** it MUST read `data/tokenizers/tokenizer.json` (fallback `data/tokenizer.json`).
+- **Given** the model is built, **When** `vocab_size` is set, **Then** it MUST equal 16384 to match the tokenizer.
+- **Given** a checkpoint `tokenizer_hash`, **When** computed, **Then** it MUST be the SHA-256 of `data/tokenizers/tokenizer.json` (prefix `6bc3a6…`).
 
-### Requirement: Training Loop
+### Requirement: AsyncCheckpointManagerV2
 
-The system MUST provide a training loop accessible via `python -m src.training.train` that performs autoregressive language model training in fp32.
+The system MUST provide `AsyncCheckpointManagerV2` in `src/engine_v2/checkpoint_v2.py` for atomic
+async save/load of training state, writing a single canonical `checkpoint.pt` per run.
+
+**Scenarios:**
+
+- **Given** `save_checkpoint()` is called, **When** it writes, **Then** it MUST use an atomic tmp file renamed to `checkpoint.pt` and leave no `.tmp` behind.
+- **Given** a saved checkpoint, **When** inspected, **Then** it MUST contain `model_state`, `optimizer_state`, `scheduler_state`, `ema_state`, `amp_scaler_state`, `rng_states`, `metrics`, `env`, `dataset_hash`, `tokenizer_hash`, `model_config`, `step`, and `global_tokens`.
+- **Given** a saved checkpoint, **When** `tokenizer_hash` is inspected, **Then** it MUST equal the SHA-256 of `data/tokenizers/tokenizer.json`.
+- **Given** a saved checkpoint, **When** `model_config` is inspected, **Then** it MUST be the full `M01Config` dict (architecture fingerprint).
+- **Given** a checkpoint saved during training, **When** loaded via `resume()`, **Then** model weights, optimizer state, scheduler state, EMA, AMP scaler, and RNGs MUST all be restored.
+
+### Requirement: Resume and Layer-Stacking
+
+The system MUST support `engine.resume(checkpoint_path=None)` that resumes the current run's canonical
+checkpoint when `checkpoint_path` is `None`, and loads an explicit checkpoint file for layer-stacking
+when a path is given.
+
+**Scenarios:**
+
+- **Given** `engine.resume()` with no path, **When** a canonical `checkpoint.pt` exists, **Then** training MUST continue from that checkpoint.
+- **Given** `engine.resume("base.pt")`, **When** the file exists, **Then** the model MUST load `base.pt` and continue training (stacking knowledge).
+- **Given** a resumed checkpoint, **When** its `model_config` differs from the current model on `vocab_size`, `n_layers`, `d_model`, `num_experts`, `num_shared_experts`, or `moe_top_k`, **Then** `_assert_config_compatible()` MUST raise `ValueError` and refuse to stack.
+
+### Requirement: AMP / Mixed Precision
+
+The training loop MUST use mixed precision via `AMPContext` (`autocast` + `GradScaler`) on CUDA/ROCm
+devices for throughput.
+
+**Scenarios:**
+
+- **Given** the training loop source, **When** inspected on a CUDA device, **Then** the forward pass MUST run under `AMPContext.autocast()` and backward MUST use `amp_context.scale(loss).backward()`.
+- **Given** a training step, **When** `amp_scaler_state` is saved, **Then** it MUST be restored on resume.
+
+### Requirement: VRAM Reporting via memory_reserved
+
+The training loop MUST report VRAM using `torch.cuda.memory_reserved()`, not `memory_allocated()`.
+
+**Scenarios:**
+
+- **Given** the per-step log and final report, **When** VRAM is printed, **Then** it MUST use `torch.cuda.memory_reserved()` (≈11 GB at batch 16).
+- **Given** a VRAM reading, **When** compared, **Then** `memory_allocated()` (≈2.2 GB) MUST NOT be used as the reported footprint.
+
+### Requirement: Training Loop CLI
+
+The system MUST provide a training loop accessible via `python -m src.training.train` that performs
+autoregressive LM training using `TrainingEngineV2`.
 
 **CLI Interface:**
 ```
-python -m src.training.train [--batch-size N] [--seq-len N] [--max-lr F]
-    [--min-lr-ratio F] [--warmup-steps N] [--max-steps N]
-    [--weight-decay F] [--beta1 F] [--beta2 F] [--max-norm F]
-    [--log-interval N] [--save-interval N]
-    [--checkpoint-dir PATH] [--data-dir PATH]
+python -m src.training.train [--data-dir PATH] [--batch-size N] [--seq-len N]
+    [--max-lr F] [--min-lr-ratio F] [--warmup-steps N] [--max-steps N]
+    [--weight-decay F] [--grad-accum-steps N] [--max-norm F]
+    [--log-interval N] [--save-interval N] [--val-interval N]
+    [--vocab-size N] [--resume [PATH]] [--run-name NAME]
 ```
 
 **Scenarios:**
 
-- **Given** the training CLI, **When** `--help` is invoked, **Then** it MUST print usage information and exit with code 0.
-- **Given** a `configure_optimizer(model, config)` call, **When** the optimizer is inspected, **Then** it MUST be an `AdamW` instance with exactly 2 param groups.
-- **Given** `configure_optimizer`, **When** param groups are inspected, **Then** the first group MUST have `weight_decay > 0` (decay group) and the second MUST have `weight_decay = 0.0` (no_decay group).
-- **Given** a model with bias and gamma parameters, **When** `configure_optimizer` is called, **Then** parameters named `bias` or `gamma` MUST be in the `no_decay` group.
-- **Given** a `get_lr_scheduler(optimizer, warmup=200, max_steps=100000, min_lr_ratio=0.1)`, **When** LR values are inspected after each `scheduler.step()`, **Then** LR MUST increase linearly from 0 to `max_lr` during warmup, then decay following a cosine curve to `max_lr * min_lr_ratio`.
-- **Given** a training step, **When** `loss.backward()` is called, **Then** gradients MUST be clipped to `max_norm=1.0` via `clip_grad_norm_`.
-- **Given** a loss value that is NaN or Inf, **When** detected before `optimizer.step()`, **Then** training MUST abort gracefully.
+- **Given** the training CLI, **When** `--help` is invoked, **Then** it MUST print usage and exit 0.
+- **Given** `configure_optimizer(model, config)`, **When** inspected, **Then** it MUST return an `AdamW` with exactly 2 param groups (decay + no_decay; `bias`/`gamma` in no_decay).
+- **Given** a `get_lr_scheduler(optimizer, warmup=200, max_steps=100000, min_lr_ratio=0.1)`, **When** stepped, **Then** LR MUST rise linearly 0→max_lr during warmup, then cosine-decay to `max_lr * min_lr_ratio`.
+- **Given** `--vocab-size 16384`, **When** the model is built, **Then** `vocab_size` MUST be 16384.
+- **Given** `--resume runs/x/checkpoints/checkpoint.pt`, **When** launched, **Then** training MUST stack onto that checkpoint.
 
-### Requirement: Integrated Training
+### Requirement: Learning Rate Tuning (validated)
 
-The full training pipeline MUST work end-to-end: build model → load dataset → run optimizer → save checkpoints.
-
-**Scenarios:**
-
-- **Given** a `TransformerLM`, `TinyShakespeareDataset`, `TrainingConfig`, and `CheckpointManager`, **When** `train(config, model_config)` is called for 2 steps, **Then** loss after step 2 MUST be lower than initial loss (model learns).
-- **Given** a training run, **When** `train(config, model_config)` is called for 1 step with a single batch, **Then** no runtime errors MUST occur.
-- **Given** a checkpoint saved during training, **When** loaded and compared to a modified model, **Then** the loaded weights MUST match the saved checkpoint's state.
-- **Given** a checkpoint saved after 2 training steps, **When** loaded, **Then** the restored model weights MUST produce the same loss as the original saved checkpoint.
-
-### Requirement: No Mixed Precision
-
-The training loop MUST NOT use mixed precision (bf16/fp16). All operations must be in fp32.
+At batch 16, over 300-step runs that complete warmup, the optimal `max_lr` MUST be `1.2e-3` (4×
+linear scaling from the 3e-4 base); 6× (`1.8e-3`) MUST degrade final loss.
 
 **Scenarios:**
 
-- **Given** the training loop source code, **When** inspected, **Then** it MUST NOT call `torch.cuda.amp`, `autocast`, or `GradScaler`.
-- **Given** the training loop source code, **When** inspected, **Then** forward pass MUST produce fp32 logits.
+- **Given** a 300-step batch-16 run at `max_lr=1.2e-3`, **When** final loss is measured, **Then** it MUST be the best observed (≈5.448).
+- **Given** a 300-step batch-16 run at `max_lr=1.8e-3`, **When** final loss is measured, **Then** it MUST be worse than at 1.2e-3 (≈5.623).
+- **Given** a run with `--warmup-steps 200` and only 120 steps, **When** LR is measured, **Then** `max_lr` MUST NOT be reached (warmup never completes) — such a run is invalid for LR tuning.
 
 ### Requirement: DataLoader Safety
 
-The DataLoader MUST be configured with `num_workers=0` to avoid multiprocessing deadlocks on Windows/ROCm.
+The DataLoader MUST be configured with `num_workers=0` on Windows/ROCm to avoid multiprocessing
+deadlocks.
 
 **Scenarios:**
 
-- **Given** the training loop, **When** `DataLoader` is instantiated, **Then** `num_workers` MUST be 0.
-- **Given** the dataset code, **When** inspected, **Then** no multiprocessing or shared memory patterns MUST be present.
+- **Given** the training loop, **When** `DataLoader` is instantiated, **Then** `num_workers` MUST be 0 on `win32`.
+
+## Validated Empirical Configuration (session 2026-07-20)
+
+These are empirical facts measured this session on the target hardware (AMD RX 9060 XT 16GB,
+ROCm 7.14, Windows). They refine the canonical requirements above.
+
+### Batch size sweet spot (Windows + AMD 16GB)
+
+Measured VRAM (reserved) on `corpus1_es_wiki_wikisource_tech_10M` at `seq_len=1024`:
+
+| batch_size | VRAM reserved | Verdict |
+|------------|---------------|---------|
+| 16 | ~10.1 GB | safe |
+| 20 | ~12.0 GB | **sweet spot (chosen)** |
+| 22 | ~13.2 GB | rejected: with Windows system overhead it exceeds ~14 GB combined |
+
+**Rule:** VRAM scales ~linearly with batch. On Windows, leave headroom for OS overhead; **batch 20**
+is the practical maximum before the combined footprint crosses ~14 GB.
+
+### Learning-rate scaling with batch
+
+LR scales ~linearly with batch (linear scaling rule), capped at the documented ceiling:
+
+| batch_size | max_lr | × base (3e-4) | Note |
+|------------|--------|---------------|------|
+| 16 | 1.2e-3 | 4× | optimal (validated) |
+| 20 | 1.5e-3 | 5× | chosen for base run |
+| 22 | 1.65e-3 | 5.5× | |
+| — | 1.8e-3 | 6× | **ceiling** — beyond this loss degrades |
+
+### One practical pass over the 10M corpus
+
+At `seq_len=1024`: tokens/step = `batch_size × 1024`. For batch 20, `488 steps ≈ 9.99M tokens`
+≈ one practical pass over `corpus1` (9,987,393 tokens). Warmup MUST be `< half` of `max_steps`
+(e.g. warmup 30 for 488 steps) or the run is invalid for LR tuning.
+
+### Flash / mem-efficient attention is UNSTABLE on this GPU
+
+Setting `TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1` makes training crash at the **first backward
+pass** with `hipErrorInvalidValue` (the experimental SDP kernels do not support the MoE+MLA+RoPE
+backward path on gfx1200 / torch 2.12 ROCm). **MUST NOT** be enabled for M0.1 training; the default
+(non-experimental) `scaled_dot_product_attention` works.
+
+### KNOWN ISSUE: train.py / dataset.py / experiment.py revert between sessions
+
+Edits to `src/training/train.py`, `src/training/dataset.py` and `src/engine_v2/experiment.py` (adding
+`--run-name`, `BinaryCorpusDataset`, `run_name`) do **not** persist: the environment reverts them to a
+committed "basic" version (only `TinyShakespeareDataset`, no flags) between sessions. Runs executed
+against the reverted code silently train on TinyShakespeare instead of the 10M corpus.
+
+**Workaround (canonical 10M entry point until train.py is restored/committed):** a standalone runner
+in a temp dir that inlines `BinaryCorpusDataset` + `configure_optimizer` / `get_lr_scheduler` /
+`worker_init_fn` and imports only stable modules (`M01Config`, `TransformerLM`, `TrainingEngineV2`,
+`TrainingConfig`). Caveats: `M01Config` does **not** accept `gradient_checkpointing`; the current
+`ExperimentManager.__init__` does **not** accept `run_name` (auto-numbers the run dir).
+
+### Base real run result (2026-07-20)
+
+- Config: batch 20, seq_len 1024, vocab 16384, max_lr 1.5e-3, warmup 30, 488 steps (~9.99M tokens).
+- Result: final loss **5.58** (from 8.71), elapsed 61 min. Checkpoint at `runs/0004/checkpoints`.
+- Note: throughput was ~2.7k tok/s (vs 6.6–7.1k in earlier runs) because `engine_v2`/`transformer`
+  also reverted to slower versions this session — numbers are not directly comparable. Per-step VRAM
+  logged ~2.4 GB (no OOM); the final `memory_reserved` reading of ~29 GB is a reporting artifact.

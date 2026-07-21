@@ -21,10 +21,10 @@ class TransformerLM(nn.Module):
 
 **Scenarios:**
 
-- **Given** a `TransformerLM` with default M01Config, **When** `forward(token_ids)` is called with shape `(batch, seq_len)`, **Then** output logits shape MUST be `(batch, seq_len, 32768)`.
-- **Given** a `TransformerLM`, **When** `forward(token_ids)` is called with a single token `(1, 1)`, **Then** output logits shape MUST be `(1, 1, 32768)`.
-- **Given** a `TransformerLM`, **When** `forward(token_ids)` is called with various batch sizes `(1, 8)`, `(4, 16)`, `(8, 32)`, **Then** output logits shape MUST be `(batch, seq_len, 32768)` for each.
-- **Given** a `TransformerLM`, **When** `forward(token_ids, kv_caches=list_of_caches)` is called, **Then** output logits shape MUST be `(batch, seq_len, 32768)`.
+- **Given** a `TransformerLM` with default M01Config, **When** `forward(token_ids)` is called with shape `(batch, seq_len)`, **Then** output logits shape MUST be `(batch, seq_len, 16384)`.
+- **Given** a `TransformerLM`, **When** `forward(token_ids)` is called with a single token `(1, 1)`, **Then** output logits shape MUST be `(1, 1, 16384)`.
+- **Given** a `TransformerLM`, **When** `forward(token_ids)` is called with various batch sizes `(1, 8)`, `(4, 16)`, `(8, 32)`, **Then** output logits shape MUST be `(batch, seq_len, 16384)` for each.
+- **Given** a `TransformerLM`, **When** `forward(token_ids, kv_caches=list_of_caches)` is called, **Then** output logits shape MUST be `(batch, seq_len, 16384)`.
 - **Given** a `TransformerLM`, **When** `forward(token_ids)` is called without KV caches, **Then** it MUST produce valid output (defaults to None).
 - **Given** a `TransformerLM` with default M01Config, **When** `sum(p.numel() for p in model.parameters())` is computed, **Then** total MUST equal `80_461_440`.
 - **Given** a `TransformerLM`, **When** `forward(token_ids)` is called and `loss.backward()` is performed, **Then** backward MUST succeed.

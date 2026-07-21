@@ -9,7 +9,7 @@ context: |
   Testing: pytest 9.1.1, 194 tests (all passing)
   Style: PEP 8, no formatter/linter installed yet
   Performance: 162ms forward pass (batch=4, seq=1024, 80M params)
-  Training: Checkpoint at step 200, loss 4.45, needs more training for coherent output
+  Training: base real run (batch 20, 488 steps on 10M corpus) loss 5.58; stacking / longer training needed for coherent text
   Fase 0 complete: BPE tokenizer, dataset prep, token counter CLI
   Fase 1 complete: Model Architecture (config, embeddings, RoPE, attention, KV-Cache, feedforward, MoE)
   Fase 2 complete: Transformer Block (RMSNorm, TransformerBlock, TransformerLM) and Training Pipeline (TrainingConfig, TinyShakespeareDataset, CheckpointManager, training loop, 97 tests)

@@ -30,7 +30,7 @@ This repository contains the foundations for M0.1, establishing the baseline env
 * **Fase 0: Foundations (Completada)**
   * Inicialización del entorno de desarrollo.
   * Ingesta de datos (`prep.py`) para TinyShakespeare o texto local validado en UTF-8.
-  * Tokenizador Byte-level BPE (`bpe.py`) con 256 bytes base + `<|endoftext|>` (256) y `<|pad|>` (257), entrenado hasta vocabulario de 32768.
+  * Tokenizador Byte-level BPE (`bpe.py`) con 256 bytes base + `<|endoftext|>` (256) y `<|pad|>` (257), entrenado hasta vocabulario de 16384.
   * CLI de conteo y visualización de tokens (`counter.py`) con colores ANSI y métricas.
   * Suite de testing (`pytest`) completa.
 * **Fase 1: Model Architecture (Completada)**
@@ -74,7 +74,7 @@ To train the tokenizer or use it programmatically:
 from src.tokenizer.bpe import Tokenizer
 
 tokenizer = Tokenizer()
-tokenizer.train("your text data here", vocab_size=32768)
+tokenizer.train("your text data here", vocab_size=16384)
 tokenizer.save("tokenizer.json")
 ```
 

@@ -13,7 +13,7 @@ The system MUST provide a `TokenEmbedding` module in `src/transformer/embeddings
 **Scenarios:**
 
 - **Given** a `TokenEmbedding` with default M01Config, **When** `forward(token_ids)` is called with shape `(batch, seq_len)`, **Then** output shape MUST be `(batch, seq_len, 640)`.
-- **Given** a `TokenEmbedding`, **When** `output_head(hidden)` is called with shape `(batch, seq_len, 640)`, **Then** output shape MUST be `(batch, seq_len, 32768)`.
+- **Given** a `TokenEmbedding`, **When** `output_head(hidden)` is called with shape `(batch, seq_len, 640)`, **Then** output shape MUST be `(batch, seq_len, 16384)`.
 - **Given** a `TokenEmbedding`, **When** `output_head(hidden)` is called, **Then** it MUST use `F.linear(hidden, self.embedding.weight)` — the same weight matrix as the embedding layer.
 - **Given** a `TokenEmbedding` after forward + backward pass, **When** `embedding.weight.grad` is inspected, **Then** it MUST be non-null (gradient flows through tied weights).
 - **Given** a `TokenEmbedding`, **When** `parameters()` is called, **Then** there MUST be exactly one parameter group (the embedding weight).
@@ -21,7 +21,7 @@ The system MUST provide a `TokenEmbedding` module in `src/transformer/embeddings
 
 ### Requirement: Weight Tying
 
-The output projection head MUST share weights with the input embedding layer. This saves approximately 10.5M parameters (vocab_size × d_model = 32768 × 640 × 2 bytes).
+The output projection head MUST share weights with the input embedding layer. This saves approximately 5.2M parameters (vocab_size × d_model = 16384 × 640 × 2 bytes).
 
 **Scenarios:**
 
