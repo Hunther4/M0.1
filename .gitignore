@@ -24,6 +24,7 @@ wheels/
 venv/
 venv_rocm/
 .venv/
+.venv_25-07/
 env/
 ENV/
 

@@ -193,7 +193,7 @@ In the V2 training framework, the Z-loss is separated from the load balancing lo
 
 ### TrainingEngineV2 (Enterprise Framework)
 
-The primary training orchestration is built on a **Finite State Machine (FSM)** with clearly defined states:
+The primary training orchestration (``src.training.train``) is built on a **Finite State Machine (FSM)** with clearly defined states:
 
 ```
 INIT -> LOAD -> TRAIN -> VALIDATE -> SAVE -> EVALUATE -> EXPORT -> FINISHED
@@ -214,7 +214,10 @@ The V2 engine supports:
 - Loss breakdown tracking per step (logged to JSONL and CSV).
 - Environment metadata capture (hardware, OS, Python, PyTorch version, command line, CPU cores, RAM).
 
-### Simplified Callback System (V1 Engine)
+### Simplified Callback System (V1 Engine — Legacy)
+
+> **Status:** V1 is preserved for backward compatibility with scripts under ``scripts/training/``.
+> The main entry point (``src.training.train``) uses the V2 engine above.
 
 The original training engine (`TrainingEngine`) exposes a minimal callback interface with only 3 hooks:
 
@@ -380,14 +383,16 @@ pip install torch numpy pytest
 Download TinyShakespeare:
 
 ```bash
-python -m src.dataset.prep --download
+python -m src.data.prep --download
 ```
 
 Or ingest a custom Spanish text corpus:
 
 ```bash
-python -m src.dataset.prep -i path/to/corpus.txt -o data/raw_text/corpus.txt
+python -m src.data.prep -i path/to/corpus.txt -o data/raw_text/corpus.txt
 ```
+
+> **Note:** ``python -m src.dataset.prep`` still works as a backward-compatible alias.
 
 ### Train
 
@@ -447,7 +452,7 @@ print(text)
 ```
 M0.1/
 ├── src/
-│   ├── transformer/
+│   ├── transformer/            # Core model components
 │   │   ├── config.py           # M01Config dataclass (d_model, n_heads, num_experts, etc.)
 │   │   ├── embeddings.py       # TokenEmbedding with weight-tied output head
 │   │   ├── attention.py        # CausalSelfAttention (MLA, Hybrid, MHA modes)
@@ -455,52 +460,44 @@ M0.1/
 │   │   ├── feedforward.py      # SwiGLU FeedForward (expert building block)
 │   │   ├── rope.py             # Rotary Positional Embeddings
 │   │   └── kv_cache.py         # Pre-allocated KV cache for autoregressive generation
-│   ├── model/
+│   ├── model/                  # Model assembly
 │   │   ├── lm.py               # TransformerLM (embed -> blocks -> norm -> tied output)
 │   │   ├── block.py            # TransformerBlock (pre-norm attention + FF/MoE)
 │   │   └── rms_norm.py         # RMSNorm
-│   ├── training/
-│   │   ├── train.py            # CLI entry point (training)
-│   │   ├── engine.py           # TrainingEngine (V1, callback-based)
+│   ├── training/               # Training entry point + shared utilities
+│   │   ├── train.py            # Main CLI entry point (uses V2 engine)
 │   │   ├── config.py           # TrainingConfig (batch_size, max_lr, warmup_steps, etc.)
-│   │   ├── state.py            # TrainerState (single source of truth)
-│   │   ├── callbacks.py        # Callback interface and implementations
-│   │   ├── checkpoint.py       # CheckpointManager (atomic save/load)
-│   │   ├── ema.py              # ModelEMA (Polyak averaging)
-│   │   ├── amp.py              # AMPContext (mixed precision wrapper)
-│   │   ├── moe_metrics.py      # 20+ MoE metrics (4 categories)
-│   │   ├── metrics.py          # MetricRegistry (CE, perplexity, throughput, memory)
-│   │   ├── run_manager.py      # RunManager (structured experiment directories)
-│   │   ├── dataset.py          # TinyShakespeareDataset (sliding window)
-│   │   ├── datasets.py         # Additional dataset utilities
-│   │   ├── loop.py             # Training loop utilities
-│   │   ├── eval.py             # Evaluation utilities
-│   │   └── setup.py            # Training setup helpers
-│   ├── engine_v2/
+│   │   ├── dataset.py          # TinyShakespeareDataset, BinaryCorpusDataset
+│   │   ├── checkpoint.py       # CheckpointManager (V1, legacy interface)
+│   │   └── ...                 # V1 legacy modules (loop, eval, setup, datasets)
+│   ├── engine_v2/              # Active training engine (FSM, EventBus, LossPipeline)
+│   │   ├── __init__.py         # Public API exports
 │   │   ├── engine.py           # TrainingEngineV2 (FSM-based, enterprise-grade)
 │   │   ├── fsm.py              # StateMachine (state transitions with validation)
 │   │   ├── bus.py              # EventBus (decoupled publish/subscribe)
 │   │   ├── loss_pipeline.py    # LossPipeline (composable loss terms)
 │   │   ├── experiment.py       # ExperimentManager (run directory structure)
 │   │   ├── checkpoint_v2.py    # AsyncCheckpointManagerV2
-│   │   ├── ema.py              # EMA (V2)
-│   │   ├── amp.py              # AMPContext (V2)
-│   │   ├── metrics.py          # MetricRegistry (V2)
+│   │   ├── ema.py              # EMA shadow weights
+│   │   ├── amp.py              # AMPContext (mixed precision)
+│   │   ├── metrics.py          # MetricRegistry
 │   │   ├── plugins.py          # Plugin system
 │   │   ├── profiler.py         # GranularProfiler
-│   │   ├── health.py           # HealthChecker
+│   │   ├── health.py           # HealthChecker (NaN/Inf recovery)
 │   │   └── loggers.py          # ConsoleLogger, JSONLLogger, CSVLogger
-│   ├── tokenizer/
-│   │   ├── bpe.py              # BPE tokenizer (train, encode, decode)
+│   ├── tokenizer/              # BPE tokenizer
+│   │   └── bpe.py
+│   ├── data/                   # Data preparation (canonical — unified from dataset/ + training/dataset.py)
+│   │   ├── prep.py             # Download/ingest text corpora
 │   │   └── __init__.py
-│   ├── dataset/
-│   │   └── prep.py             # Data preparation (download, ingest)
-│   ├── inference/
+│   ├── dataset/                # Backward-compat shim → src.data
+│   │   └── __init__.py
+│   ├── inference/              # Text generation
 │   │   ├── generate.py         # Autoregressive text generation
 │   │   ├── sampling.py         # Sampling strategies (temperature, top-k, top-p)
 │   │   ├── profiling.py        # Inference profiling
 │   │   └── cli.py              # Inference CLI
-│   ├── eval/
+│   ├── eval/                   # Evaluation pipeline
 │   │   ├── evaluate.py         # Evaluation pipeline
 │   │   ├── metrics.py          # Evaluation metrics
 │   │   ├── qa.py               # Question answering evaluation
@@ -526,7 +523,7 @@ M0.1/
 │   ├── test_engine_v2_hardened.py  # V2 engine hardened tests
 │   ├── test_eval_*.py          # Evaluation tests
 │   ├── test_scripts_*.py       # Script integration tests
-│   └── ... (34 test files total)
+│   └── ... (34 test files, 321 tests total)
 ├── data/                       # Training data (TinyShakespeare, Spanish corpus)
 ├── runs/                       # Experiment runs (run_0001/, run_0002/, etc.)
 ├── docs/                       # Architecture and design documentation
@@ -542,7 +539,7 @@ M0.1/
 
 ## Testing
 
-The project has 34 test files covering all components:
+The project has 34 test files (321 tests total) covering all components:
 
 ```bash
 python -m pytest tests/ -q

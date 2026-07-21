@@ -5,17 +5,16 @@ context: |
   Project: M0.1 — Educational autoregressive decoder-only transformer
   Tech stack: Python 3.12.10 / PyTorch 2.12.0+rocm7.14.0 (ROCm via AMD HIP, no HuggingFace Trainer)
   Hardware: AMD RX 9060 XT (gfx1200, 15.9GB VRAM), ROCm 7.14.0, HIP 7.14.60850
-  Architecture: Modular Python package (src/tokenizer, src/dataset, src/tools, src/inference)
-  Testing: pytest 9.1.1, 194 tests (all passing)
+  Architecture: Modular Python package (src/transformer, src/model, src/training, src/engine_v2, src/eval, src/inference, src/tokenizer, src/data, src/tools)
+  Testing: pytest 9.1.1, 321 tests (all passing)
   Style: PEP 8, no formatter/linter installed yet
   Performance: 162ms forward pass (batch=4, seq=1024, 80M params)
-  Training: base real run (batch 20, 488 steps on 10M corpus) loss 5.58; stacking / longer training needed for coherent text
-  Fase 0 complete: BPE tokenizer, dataset prep, token counter CLI
-  Fase 1 complete: Model Architecture (config, embeddings, RoPE, attention, KV-Cache, feedforward, MoE)
-  Fase 2 complete: Transformer Block (RMSNorm, TransformerBlock, TransformerLM) and Training Pipeline (TrainingConfig, TinyShakespeareDataset, CheckpointManager, training loop, 97 tests)
-  Fase 3 complete: Inference (sampling strategies, autoregressive generation with KV cache, CLI interface, 16 tests)
-  Next: Fase 4 — Evaluation (perplexity, loss curves, eval CLI)
-  After Fase 4: Training phases (longer training for coherent text)
+  Training: layer-stacking strategy; run_0001 (batch 20, 488 steps, 9.99M tokens) loss 5.58
+    V2 engine (FSM, EventBus, LossPipeline) active via src/training/train.py
+    V1 engine (callback-based) legacy, kept for script/* compatibility
+  Tokenizer: fixed 16k BPE (data/tokenizers/tokenizer.json, SHA 6bc3a6…)
+  Corpora: corpus1 (10M tokens, trained) / corpus2 (17M, next) / corpus3 (265M, future)
+  Audit: full fixed (z-loss double-count, weights_only, inference, eval, corpus, KV cache)
 
 rules:
   proposal:
@@ -39,3 +38,4 @@ rules:
     coverage_threshold: 0
   archive:
     - Warn before merging destructive deltas
+    - Sync openspec/config.yaml context block with current project state
