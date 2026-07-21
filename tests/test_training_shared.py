@@ -164,6 +164,28 @@ class TestCheckpoint:
             assert n1 == n2
             assert torch.allclose(p1, p2)
 
+    def test_v2_schema_and_full_config_roundtrip(self, tmp_path):
+        """Canonical V2 aliases preserve MLA, RoPE, and MoE dimensions."""
+        from src.model.lm import TransformerLM
+
+        config = M01Config(
+            vocab_size=128, context_length=32, d_model=16, n_heads=2,
+            d_ff=32, n_layers=2, rope_theta=1234.5, num_experts=4,
+            num_shared_experts=1, moe_top_k=1, d_ff_shared=24,
+            d_ff_routed=20, use_hybrid_attention=True, csa_kv_dim=10,
+            hca_kv_dim=6, local_window_size=8, use_mla=True,
+            mla_kv_c_dim=12, mla_rope_dim=6, num_dense_layers=1,
+            dropout=0.1,
+        )
+        model = TransformerLM(config)
+        path = tmp_path / "v2.pt"
+        torch.save({"model_state": model.state_dict(), "model_config": config_to_dict(config)}, path)
+
+        loaded_model, loaded_config = load_checkpoint(str(path))
+
+        assert config_to_dict(loaded_config) == config_to_dict(config)
+        assert torch.equal(loaded_model.embedding.embedding.weight, model.embedding.embedding.weight)
+
     def test_file_not_found(self):
         """load_checkpoint raises FileNotFoundError for missing file."""
         with pytest.raises(FileNotFoundError):

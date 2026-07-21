@@ -9,7 +9,7 @@ def expand_model_depth(checkpoint_path: str, output_path: str, new_layers: int):
         return
 
     print(f"Loading base checkpoint: {checkpoint_path}")
-    ckpt = torch.load(checkpoint_path, map_location="cpu")
+    ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
     config = ckpt["config"]
     old_layers = config["n_layers"]
 

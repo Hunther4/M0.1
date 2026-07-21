@@ -4,6 +4,16 @@ from torch import Tensor
 from torch.nn import Module
 
 
+def _model_device(model: Module, fallback: Tensor) -> torch.device:
+    try:
+        parameter = next(model.parameters())
+        if isinstance(parameter, Tensor):
+            return parameter.device
+    except (StopIteration, TypeError, AttributeError):
+        pass
+    return fallback.device
+
+
 def calculate_perplexity(model: Module, input_ids: Tensor, attention_mask: Tensor | None = None) -> float:
     """Calculate perplexity on a sequence.
     
@@ -17,6 +27,8 @@ def calculate_perplexity(model: Module, input_ids: Tensor, attention_mask: Tenso
     """
     model.eval()
     with torch.no_grad():
+        device = _model_device(model, input_ids)
+        input_ids = input_ids.to(device)
         if input_ids.dim() == 1:
             input_ids = input_ids.unsqueeze(0)
         
@@ -46,6 +58,8 @@ def log_loss(model: Module, input_ids: Tensor) -> dict:
     """
     model.eval()
     with torch.no_grad():
+        device = _model_device(model, input_ids)
+        input_ids = input_ids.to(device)
         if input_ids.dim() == 1:
             input_ids = input_ids.unsqueeze(0)
         

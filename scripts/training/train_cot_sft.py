@@ -117,7 +117,7 @@ def main():
     base_ckpt_path = "checkpoints/final_combined_8k.pt"
     if os.path.exists(base_ckpt_path):
         print(f"Cargando pesos base de: {base_ckpt_path}")
-        checkpoint = torch.load(base_ckpt_path, map_location=device)
+        checkpoint = torch.load(base_ckpt_path, map_location=device, weights_only=True)
         model.load_state_dict(checkpoint["model_state_dict"])
     else:
         print("Error: No se encontró el checkpoint base de 55M. Por favor, entrena el modelo base primero.")

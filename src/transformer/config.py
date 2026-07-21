@@ -11,7 +11,7 @@ class M01Config:
     """Configuration for the M0.1 decoder-only transformer.
     
     Attributes:
-        vocab_size: Vocabulary size (default: 32768)
+        vocab_size: Vocabulary size (default: 16384)
         context_length: Maximum sequence length (default: 8192)
         d_model: Embedding dimension (default: 640)
         n_heads: Number of attention heads (default: 10)
@@ -23,7 +23,7 @@ class M01Config:
         moe_top_k: Number of active routed experts per token (default: 1)
         dropout: Dropout rate (default: 0.0)
     """
-    vocab_size: int = 32768
+    vocab_size: int = 16384
     context_length: int = 8192
     d_model: int = 640
     n_heads: int = 10

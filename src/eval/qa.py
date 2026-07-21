@@ -5,6 +5,16 @@ from torch import Tensor
 from torch.nn import Module
 
 
+def _model_device(model: Module) -> torch.device:
+    try:
+        parameter = next(model.parameters())
+        if isinstance(parameter, Tensor):
+            return parameter.device
+    except (StopIteration, TypeError, AttributeError):
+        pass
+    return torch.device("cpu")
+
+
 def coherence_test(
     model: Module,
     prompt: str,
@@ -25,9 +35,10 @@ def coherence_test(
         Dictionary with interval perplexities and average coherence score
     """
     model.eval()
+    device = _model_device(model)
     
     encoded = tokenizer.encode(prompt)
-    input_ids = torch.tensor(encoded).unsqueeze(0)
+    input_ids = torch.tensor(encoded, device=device).unsqueeze(0)
     
     interval_perplexities = []
     
@@ -76,6 +87,7 @@ def niah_test(
         Dictionary with retrieval accuracy and details
     """
     model.eval()
+    device = _model_device(model)
     
     # Combine prompt with needle
     haystack = f"{prompt} {needle}"
@@ -83,9 +95,11 @@ def niah_test(
     
     # Truncate to context length
     if len(encoded) > context_length:
-        encoded = encoded[:context_length]
+        # Keep the appended target span, rather than dropping it from the
+        # right side of the haystack.
+        encoded = encoded[-context_length:]
     
-    input_ids = torch.tensor(encoded).unsqueeze(0)
+    input_ids = torch.tensor(encoded, device=device).unsqueeze(0)
     
     with torch.no_grad():
         logits = model(input_ids)
@@ -100,8 +114,9 @@ def niah_test(
         needle_start_pos = len(encoded) - len(needle_tokens)
         for offset, token in enumerate(needle_tokens[:4]):  # Check first 4 tokens of needle
             pos = needle_start_pos + offset
-            if pos < input_ids.size(1):
-                token_prob = probs[0, pos, token].item()
+            prediction_pos = pos - 1
+            if 0 <= prediction_pos < input_ids.size(1):
+                token_prob = probs[0, prediction_pos, token].item()
                 needle_probs.append(token_prob)
         
         avg_needle_prob = sum(needle_probs) / len(needle_probs) if needle_probs else 0.0

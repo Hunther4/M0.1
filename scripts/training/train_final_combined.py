@@ -90,7 +90,7 @@ def main():
     if os.path.exists(prev_ckpt_path):
         try:
             print("Loading previous checkpoint weights to warm-start...")
-            checkpoint = torch.load(prev_ckpt_path, map_location="cpu")
+            checkpoint = torch.load(prev_ckpt_path, map_location="cpu", weights_only=True)
             # If vocab size is identical, load directly
             if checkpoint["config"]["vocab_size"] == vocab_size:
                 model.load_state_dict(checkpoint["model_state_dict"], strict=False)

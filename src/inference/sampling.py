@@ -53,8 +53,11 @@ def sample(
         mask = cumulative > top_p
         mask[..., 1:] = mask[..., :-1].clone()  # keep at least one token
         mask[..., 0] = False
-        sorted_probs[mask] = 0.0
-        probs = sorted_probs.scatter_(dim=-1, index=sorted_indices, src=sorted_probs)
+        filtered_sorted_probs = sorted_probs.masked_fill(mask, 0.0)
+        probs = torch.zeros_like(probs).scatter(
+            dim=-1, index=sorted_indices, src=filtered_sorted_probs
+        )
+        probs = probs / probs.sum(dim=-1, keepdim=True).clamp_min(torch.finfo(probs.dtype).eps)
 
     # Multinomial sampling
     return int(torch.multinomial(probs, 1).item())

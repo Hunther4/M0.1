@@ -11,7 +11,7 @@ from src.inference.generate import generate
 def load_checkpoint(path):
     if not os.path.exists(path):
         return None
-    return torch.load(path, map_location="cpu")
+    return torch.load(path, map_location="cpu", weights_only=True)
 
 def check_json_validity(text):
     """Check if the generated text after <|tool_call|> contains a valid JSON."""

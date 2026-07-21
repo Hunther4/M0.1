@@ -18,7 +18,7 @@ from src.model.lm import TransformerLM  # RED: will fail — module doesn't exis
 def base_config() -> M01Config:
     """Reduced config for fast shape/gradient tests."""
     config = M01Config(
-        vocab_size=32768,
+        vocab_size=16384,
         context_length=512,
         d_model=128,
         n_heads=4,
@@ -37,7 +37,7 @@ def full_config() -> M01Config:
 @pytest.fixture
 def sample_tokens() -> torch.Tensor:
     """Random token IDs (B=2, S=16)."""
-    return torch.randint(0, 32768, (2, 16))
+    return torch.randint(0, 16384, (2, 16))
 
 
 class TestLMShape:
@@ -48,18 +48,18 @@ class TestLMShape:
         model = TransformerLM(base_config)
         model.eval()
         logits = model(sample_tokens)
-        assert logits.shape == (2, 16, 32768), (
-            f"Expected (2, 16, 32768), got {logits.shape}"
+        assert logits.shape == (2, 16, 16384), (
+            f"Expected (2, 16, 16384), got {logits.shape}"
         )
 
     def test_logit_shape_single_token(self, base_config) -> None:
         """Forward with single token SHOULD return (1, 1, V) logits."""
         model = TransformerLM(base_config)
         model.eval()
-        tokens = torch.randint(0, 32768, (1, 1))
+        tokens = torch.randint(0, 16384, (1, 1))
         logits = model(tokens)
-        assert logits.shape == (1, 1, 32768), (
-            f"Expected (1, 1, 32768), got {logits.shape}"
+        assert logits.shape == (1, 1, 16384), (
+            f"Expected (1, 1, 16384), got {logits.shape}"
         )
 
     def test_logit_shape_different_batch_sizes(self, base_config) -> None:
@@ -68,10 +68,10 @@ class TestLMShape:
         model.eval()
         batch_sizes = [(1, 8), (4, 16), (8, 32)]
         for b, s in batch_sizes:
-            tokens = torch.randint(0, 32768, (b, s))
+            tokens = torch.randint(0, 16384, (b, s))
             logits = model(tokens)
-            assert logits.shape == (b, s, 32768), (
-                f"Expected ({b}, {s}, 32768), got {logits.shape}"
+            assert logits.shape == (b, s, 16384), (
+                f"Expected ({b}, {s}, 16384), got {logits.shape}"
             )
 
     def test_logit_shape_with_kv_caches(self, base_config) -> None:
@@ -95,17 +95,17 @@ class TestLMShape:
             kv_caches.append(cache)
 
         # Single-token autoregressive generation
-        tokens = torch.randint(0, 32768, (1, 1))
+        tokens = torch.randint(0, 16384, (1, 1))
         logits = model(tokens, kv_caches=kv_caches)
-        assert logits.shape == (1, 1, 32768), (
-            f"Expected (1, 1, 32768), got {logits.shape}"
+        assert logits.shape == (1, 1, 16384), (
+            f"Expected (1, 1, 16384), got {logits.shape}"
         )
 
         # Second token appended to KV cache
-        tokens2 = torch.randint(0, 32768, (1, 1))
+        tokens2 = torch.randint(0, 16384, (1, 1))
         logits2 = model(tokens2, kv_caches=kv_caches)
-        assert logits2.shape == (1, 1, 32768), (
-            f"Expected (1, 1, 32768), got {logits2.shape}"
+        assert logits2.shape == (1, 1, 16384), (
+            f"Expected (1, 1, 16384), got {logits2.shape}"
         )
 
     def test_kv_cache_default_none(self, base_config, sample_tokens) -> None:
@@ -113,8 +113,8 @@ class TestLMShape:
         model = TransformerLM(base_config)
         model.eval()
         logits = model(sample_tokens)
-        assert logits.shape == (2, 16, 32768), (
-            f"Expected (2, 16, 32768), got {logits.shape}"
+        assert logits.shape == (2, 16, 16384), (
+            f"Expected (2, 16, 16384), got {logits.shape}"
         )
 
 
@@ -125,8 +125,8 @@ class TestLMParamCount:
         """Default config (MoE Stage 1: 4+1 tk1) MUST have 110_225_536 parameters."""
         model = TransformerLM(full_config)
         total = sum(p.numel() for p in model.parameters())
-        assert total == 110_225_536, (
-            f"Expected 110_225_536 params, got {total}"
+        assert total == 99_739_776, (
+            f"Expected 99_739_776 params, got {total}"
         )
 
 
@@ -179,7 +179,7 @@ class TestLMGradientFlow:
             kv_caches.append(cache)
 
         # Single-token forward with KV caches
-        tokens = torch.randint(0, 32768, (1, 1))
+        tokens = torch.randint(0, 16384, (1, 1))
         logits = model(tokens, kv_caches=kv_caches)
         loss = logits.sum()
         loss.backward()

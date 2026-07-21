@@ -16,6 +16,8 @@ from src.model.lm import TransformerLM
 from src.tokenizer.bpe import Tokenizer
 from src.training.checkpoint import CheckpointManager
 from src.transformer.config import M01Config
+from src.engine_v2.checkpoint_v2 import normalize_checkpoint_state
+from src.engine_v2.checkpoint_v2 import safe_load_checkpoint
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -67,23 +69,16 @@ def main(argv: list[str] | None = None) -> None:
     print(f"Device: {device}")
     print(f"Loading checkpoint: {args.checkpoint}")
 
-    # Build model with default config
-    config = M01Config()
-    model = TransformerLM(config)
-    model.to(device)
+    # Load trained weights and architecture metadata from checkpoint.
+    state = safe_load_checkpoint(args.checkpoint, map_location=device)
+    state = normalize_checkpoint_state(state, require_architecture=True)
+    config_dict = state["model_config"]
+    valid_fields = set(M01Config.__dataclass_fields__)
+    config = M01Config(**{k: v for k, v in config_dict.items() if k in valid_fields})
+    model = TransformerLM(config).to(device)
+    model.load_state_dict(state["model_state"])
     model.eval()
-
-    # Load trained weights from checkpoint
-    state = torch.load(args.checkpoint, map_location=device, weights_only=False)
-
-    # Checkpoint stores model weights under model_state (flat dict of tensors)
-    if "model_state" in state:
-        model_sd = state["model_state"]
-        if isinstance(model_sd, dict):
-            state["model_state_dict"] = model_sd
-
-    model.load_state_dict(state["model_state_dict"])
-    print(f"Loaded step {state['step']}, loss {state.get('loss', 'N/A')}")
+    print(f"Loaded step {state.get('step', 0)}, loss {state.get('loss', 'N/A')}")
 
     # Load tokenizer
     tokenizer = Tokenizer()

@@ -60,14 +60,11 @@ class TestDatasetLength:
 
     def test_dataset_len_equals_total_minus_seq(self, dataset, training_config) -> None:
         """__len__ MUST equal total_tokens - seq_len."""
-        # len = total_tokens - seq_len. For tinyshakespeare the BPE tokenizer
-        # produces ~595K tokens (not 1.1M raw bytes), so len is ~595K - seq_len
+        # The invariant is deterministic; corpus size is intentionally not
+        # asserted because data revisions are valid.
         n = len(dataset)
         expected_total = n + training_config.seq_len
-        # Verify total token count is in a reasonable range for tinyshakespeare
-        assert 500_000 < expected_total < 700_000, (
-            f"Expected ~595K total tokens, got {expected_total}"
-        )
+        assert expected_total == len(dataset.tokens)
 
 
 class TestDatasetGetItem:
@@ -267,7 +264,7 @@ class TestCheckpointSave:
             scheduler=chk_scheduler, loss=1.234, config={"vocab_size": 32768},
         )
         pt_path = os.path.join(manager.checkpoint_dir, "checkpoint.pt")
-        checkpoint = torch.load(pt_path, weights_only=False)
+        checkpoint = torch.load(pt_path, weights_only=True)
         expected_keys = {
             "epoch", "step", "loss",
             "model_state_dict", "optimizer_state_dict",
@@ -286,7 +283,7 @@ class TestCheckpointSave:
             scheduler=chk_scheduler, loss=0.5, config={"lr": 1e-3},
         )
         pt_path = os.path.join(manager.checkpoint_dir, "checkpoint.pt")
-        checkpoint = torch.load(pt_path, weights_only=False)
+        checkpoint = torch.load(pt_path, weights_only=True)
         assert checkpoint["step"] == 99, (
             f"Expected step=99, got {checkpoint['step']}"
         )
@@ -299,7 +296,7 @@ class TestCheckpointSave:
             scheduler=chk_scheduler, loss=3.14159, config={},
         )
         pt_path = os.path.join(manager.checkpoint_dir, "checkpoint.pt")
-        checkpoint = torch.load(pt_path, weights_only=False)
+        checkpoint = torch.load(pt_path, weights_only=True)
         assert abs(checkpoint["loss"] - 3.14159) < 1e-5, (
             f"Expected loss ~3.14159, got {checkpoint['loss']}"
         )
@@ -312,7 +309,7 @@ class TestCheckpointSave:
             scheduler=chk_scheduler, loss=1.0, config={},
         )
         pt_path = os.path.join(manager.checkpoint_dir, "checkpoint.pt")
-        checkpoint = torch.load(pt_path, weights_only=False)
+        checkpoint = torch.load(pt_path, weights_only=True)
         assert checkpoint["epoch"] == 0, (
             f"Expected epoch == 0, got {checkpoint['epoch']}"
         )

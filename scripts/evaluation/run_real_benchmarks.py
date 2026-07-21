@@ -43,7 +43,7 @@ def main():
     
     # 1. Load Hardened Model
     print(">>> LOADING MODEL: m01_hardened_final.pt (9.4M MoE)")
-    ckpt_hardened = torch.load("checkpoints/m01_hardened_final.pt", map_location=device)
+    ckpt_hardened = torch.load("checkpoints/m01_hardened_final.pt", map_location=device, weights_only=True)
     cfg_h = ckpt_hardened["config"]
     config_h = M01Config(
         vocab_size=cfg_h["vocab_size"],
@@ -66,7 +66,7 @@ def main():
     
     # 2. Load Uncensored Model
     print(">>> LOADING MODEL: m01_uncensored.pt (9.4M MoE)")
-    ckpt_uncensored = torch.load("checkpoints/m01_uncensored.pt", map_location=device)
+    ckpt_uncensored = torch.load("checkpoints/m01_uncensored.pt", map_location=device, weights_only=True)
     model_uncensored = TransformerLM(config_h).to(device)
     model_uncensored.load_state_dict(ckpt_uncensored["model_state_dict"])
     model_uncensored.eval()

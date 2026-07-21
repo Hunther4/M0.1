@@ -39,6 +39,7 @@ class TrainingConfig:
     max_norm: float = 1.0
     log_interval: int = 10
     save_interval: int = 500
+    val_interval: int = 500
     checkpoint_dir: str = "checkpoints"
     data_dir: str = "data"
 

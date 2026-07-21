@@ -87,6 +87,18 @@ class TransformerLM(nn.Module):
                 aux_loss += block.ff.get_aux_loss()
         return aux_loss
 
+    def get_z_loss(self) -> Tensor:
+        """Collect and sum Router Z-Loss from all child MoELayers."""
+        import torch
+
+        z_loss = torch.tensor(0.0, device=self.norm.gamma.device)
+        count = 0
+        for block in self.blocks:
+            if hasattr(block.ff, "get_z_loss"):
+                z_loss += block.ff.get_z_loss()
+                count += 1
+        return z_loss / count if count > 0 else z_loss
+
     def get_moe_metrics(self) -> dict:
         """Compute and return MoE routing metrics for this model.
 

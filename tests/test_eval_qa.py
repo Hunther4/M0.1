@@ -19,6 +19,13 @@ class MockTokenizer:
         return [ord(c) % self.vocab_size for c in text[:100]]  # Limit to 100 chars
 
 
+class ExactTokenizer:
+    vocab_size = 256
+
+    def encode(self, text: str):
+        return [ord(c) for c in text]
+
+
 class TestCoherenceTest:
     """Tests for coherence_test function."""
     
@@ -149,3 +156,30 @@ class TestNiahTest:
         result = niah_test(mock_model, prompt, needle, tokenizer)
         
         assert 0 <= result["accuracy"] <= 1
+
+    def test_niah_appended_needle_survives_long_haystack(self):
+        tokenizer = ExactTokenizer()
+        prompt = "h" * 40
+        needle = "OK"
+        needle_tokens = tokenizer.encode(needle)
+        context_length = 16
+
+        class NeedleModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.seen = None
+
+            def forward(self, input_ids):
+                self.seen = input_ids.detach().clone()
+                logits = torch.full((1, input_ids.shape[1], 256), -20.0)
+                # The causal prediction at pos-1 must score the token at pos.
+                for pos, token in enumerate(needle_tokens, start=input_ids.shape[1] - len(needle_tokens)):
+                    logits[0, pos - 1, token] = 20.0
+                return logits
+
+        model = NeedleModel()
+        result = niah_test(model, prompt, needle, tokenizer, context_length=context_length)
+
+        assert model.seen[0, -len(needle_tokens):].tolist() == needle_tokens
+        assert result["accuracy"] == 1.0
+        assert result["avg_probability"] > 0.99

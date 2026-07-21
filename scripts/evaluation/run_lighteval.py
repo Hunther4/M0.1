@@ -92,7 +92,7 @@ class LightevalM01Adapter(LightevalModel):
                 ckpt_path = "checkpoints/final_combined_8k.pt"
 
         print(f"[LightEval Adapter] Loading weights from: {ckpt_path}")
-        checkpoint = torch.load(ckpt_path, map_location=self.device)
+        checkpoint = torch.load(ckpt_path, map_location=self.device, weights_only=True)
         ckpt_config = checkpoint["config"]
         state_dict = checkpoint["model_state_dict"]
 

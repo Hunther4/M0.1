@@ -12,9 +12,9 @@ def merge_checkpoints(path1: str, path2: str, output_path: str, alpha: float = 0
         return
 
     print(f"Loading checkpoint 1: {path1}")
-    ckpt1 = torch.load(path1, map_location="cpu")
+    ckpt1 = torch.load(path1, map_location="cpu", weights_only=True)
     print(f"Loading checkpoint 2: {path2}")
-    ckpt2 = torch.load(path2, map_location="cpu")
+    ckpt2 = torch.load(path2, map_location="cpu", weights_only=True)
 
     config1 = ckpt1["config"]
     config2 = ckpt2["config"]

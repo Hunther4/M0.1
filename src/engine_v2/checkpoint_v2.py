@@ -10,10 +10,55 @@ import socket
 import platform
 import shutil
 import random
+import pickle
 from pathlib import Path
 from typing import Any, Dict, Optional
 import numpy as np
 import torch
+
+
+def safe_load_checkpoint(path: Path, map_location: str | torch.device = "cpu") -> Dict[str, Any]:
+    """Load tensors safely, with a narrow compatibility bridge for NumPy RNG tuples."""
+    try:
+        return torch.load(path, map_location=map_location, weights_only=True)
+    except (pickle.UnpicklingError, RuntimeError) as exc:
+        if "numpy" not in str(exc).lower():
+            raise
+        numpy_core = getattr(np, "_core", getattr(np, "core", None))
+        reconstruct = getattr(getattr(numpy_core, "multiarray", None), "_reconstruct", None)
+        safe_types = [item for item in (reconstruct, np.ndarray, np.dtype) if item is not None]
+        dtypes = getattr(np, "dtypes", None)
+        if dtypes is not None and hasattr(dtypes, "UInt32DType"):
+            safe_types.append(dtypes.UInt32DType)
+        with torch.serialization.safe_globals(safe_types):
+            return torch.load(path, map_location=map_location, weights_only=True)
+
+
+def normalize_checkpoint_state(state: Dict[str, Any], *, require_architecture: bool = False) -> Dict[str, Any]:
+    """Normalize V1/V2 checkpoint aliases at the deserialization boundary."""
+    if not isinstance(state, dict):
+        raise ValueError("Checkpoint root must be a dictionary")
+    aliases = {
+        "model_state": ("model_state", "model_state_dict"),
+        "model_config": ("model_config", "config"),
+        "optimizer_state": ("optimizer_state", "optimizer_state_dict"),
+        "scheduler_state": ("scheduler_state", "scheduler_state_dict"),
+    }
+    normalized = dict(state)
+    for canonical, keys in aliases.items():
+        if canonical not in normalized:
+            for key in keys:
+                if key in state:
+                    normalized[canonical] = state[key]
+                    break
+    if "model_state" not in normalized:
+        raise ValueError("Checkpoint is missing model weights (model_state/model_state_dict)")
+    if require_architecture and not isinstance(normalized.get("model_config"), dict):
+        raise ValueError(
+            "Checkpoint is missing architecture metadata (config/model_config); "
+            "cannot safely construct the model."
+        )
+    return normalized
 
 
 class AsyncCheckpointManagerV2:
@@ -26,6 +71,7 @@ class AsyncCheckpointManagerV2:
         self.backup_path = self.checkpoint_dir / "checkpoint.previous.pt"
         self.checksum_path = self.checkpoint_dir / "checkpoint.pt.sha256"
         self._write_thread: Optional[threading.Thread] = None
+        self._write_exception: Optional[BaseException] = None
 
     @staticmethod
     def calculate_sha256(filepath: Path) -> str:
@@ -50,7 +96,7 @@ class AsyncCheckpointManagerV2:
             "hostname": socket.gethostname(),
             "platform": platform.platform(),
             "python_version": sys.version,
-            "torch_version": torch.__version__,
+            "torch_version": str(torch.__version__),
             "cuda_available": torch.cuda.is_available(),
             "rocm_version": getattr(torch.version, "hip", None),
             "device_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU",
@@ -61,10 +107,17 @@ class AsyncCheckpointManagerV2:
     @staticmethod
     def capture_rng_states() -> Dict[str, Any]:
         """Capture Python, NumPy, PyTorch CPU, and CUDA/ROCm RNG states."""
+        numpy_state = np.random.get_state()
         states = {
             "python_rng": random.getstate(),
-            "numpy_rng": np.random.get_state(),
             "torch_cpu_rng": torch.get_rng_state(),
+        }
+        states["numpy_rng"] = {
+            "bit_generator": numpy_state[0],
+            "state": numpy_state[1].tolist(),
+            "pos": numpy_state[2],
+            "has_gauss": numpy_state[3],
+            "cached_gaussian": numpy_state[4],
         }
         if torch.cuda.is_available():
             states["torch_cuda_rng"] = torch.cuda.get_rng_state_all()
@@ -76,7 +129,19 @@ class AsyncCheckpointManagerV2:
         if "python_rng" in states:
             random.setstate(states["python_rng"])
         if "numpy_rng" in states:
-            np.random.set_state(states["numpy_rng"])
+            numpy_rng = states["numpy_rng"]
+            if isinstance(numpy_rng, dict):
+                np.random.set_state(
+                    (
+                        numpy_rng["bit_generator"],
+                        np.array(numpy_rng["state"], dtype=np.uint32),
+                        numpy_rng["pos"],
+                        numpy_rng["has_gauss"],
+                        numpy_rng["cached_gaussian"],
+                    )
+                )
+            else:
+                np.random.set_state(numpy_rng)
         if "torch_cpu_rng" in states:
             torch.set_rng_state(states["torch_cpu_rng"])
         if "torch_cuda_rng" in states and torch.cuda.is_available():
@@ -91,29 +156,26 @@ class AsyncCheckpointManagerV2:
 
         def _target():
             tmp_path = self.checkpoint_dir / "checkpoint.pt.tmp"
-            torch.save(state_dict, tmp_path)
+            try:
+                torch.save(state_dict, tmp_path)
+                sha256_val = self.calculate_sha256(tmp_path)
+                if self.canonical_path.exists():
+                    shutil.copy2(self.canonical_path, self.backup_path)
+                    if self.checksum_path.exists():
+                        shutil.copy2(self.checksum_path, self.checkpoint_dir / "checkpoint.previous.pt.sha256")
+                with open(self.checksum_path, "w", encoding="utf-8") as f:
+                    f.write(sha256_val)
+                os.replace(tmp_path, self.canonical_path)
+                if callback:
+                    callback(str(self.canonical_path))
+            except BaseException as exc:
+                self._write_exception = exc
 
-            # Calculate SHA256 of tmp file
-            sha256_val = self.calculate_sha256(tmp_path)
-
-            # Move current canonical checkpoint to backup if it exists
-            if self.canonical_path.exists():
-                shutil.copy2(self.canonical_path, self.backup_path)
-
-            # Write checksum file
-            with open(self.checksum_path, "w", encoding="utf-8") as f:
-                f.write(sha256_val)
-
-            # Atomic rename tmp -> canonical
-            os.replace(tmp_path, self.canonical_path)
-
-            if callback:
-                callback(str(self.canonical_path))
-
-        if self._write_thread is not None and self._write_thread.is_alive():
-            self._write_thread.join()
+        if self._write_thread is not None:
+            self.wait_completion()
 
         self._write_thread = threading.Thread(target=_target, daemon=True)
+        self._write_exception = None
         self._write_thread.start()
 
     def load_canonical(self) -> Dict[str, Any]:
@@ -128,15 +190,29 @@ class AsyncCheckpointManagerV2:
             else:
                 raise FileNotFoundError(f"No checkpoint found in {self.checkpoint_dir}")
 
-        # Verify SHA256 if loading canonical
-        if target_file == self.canonical_path and self.checksum_path.exists():
-            expected_sha = open(self.checksum_path, "r", encoding="utf-8").read().strip()
-            actual_sha = self.calculate_sha256(target_file)
+        candidates = []
+        if self.canonical_path.exists():
+            candidates.append((self.canonical_path, self.checksum_path))
+        if self.backup_path.exists():
+            candidates.append((self.backup_path, self.checkpoint_dir / "checkpoint.previous.pt.sha256"))
+        errors = []
+        for candidate, sidecar in candidates:
+            if not sidecar.exists():
+                errors.append(f"{candidate.name} checksum sidecar is missing")
+                continue
+            expected_sha = sidecar.read_text(encoding="utf-8").strip()
+            actual_sha = self.calculate_sha256(candidate)
             if expected_sha != actual_sha:
-                print("[CORRUPTION DETECTED] SHA256 mismatch! Falling back to checkpoint.previous.pt")
-                target_file = self.backup_path
+                errors.append(f"{candidate.name} checksum mismatch")
+                continue
+            target_file = candidate
+            break
+        else:
+            detail = "; ".join(errors) or "no checkpoint candidates"
+            raise IOError(f"No checkpoint passed checksum validation: {detail}")
 
-        state = torch.load(target_file, map_location="cpu", weights_only=False)
+        state = safe_load_checkpoint(target_file)
+        state = normalize_checkpoint_state(state)
         print(f"[CHECKPOINT RESTORED] Successfully loaded from {target_file}")
         return state
 
@@ -144,3 +220,7 @@ class AsyncCheckpointManagerV2:
         """Wait for any active background save thread."""
         if self._write_thread is not None and self._write_thread.is_alive():
             self._write_thread.join()
+        if self._write_exception is not None:
+            exc = self._write_exception
+            self._write_exception = None
+            raise RuntimeError("Background checkpoint save failed") from exc

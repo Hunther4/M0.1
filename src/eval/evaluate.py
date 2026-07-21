@@ -14,6 +14,7 @@ from src.eval import calculate_perplexity, coherence_test, niah_test, save_resul
 from src.model.lm import TransformerLM
 from src.tokenizer.bpe import Tokenizer
 from src.transformer.config import M01Config
+from src.engine_v2.checkpoint_v2 import normalize_checkpoint_state, safe_load_checkpoint
 
 
 def load_checkpoint(checkpoint_path: str, device: str = "cpu") -> dict:
@@ -26,8 +27,8 @@ def load_checkpoint(checkpoint_path: str, device: str = "cpu") -> dict:
     Returns:
         Checkpoint dictionary with model_state_dict and config
     """
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    return checkpoint
+    checkpoint = safe_load_checkpoint(Path(checkpoint_path), map_location=device)
+    return normalize_checkpoint_state(checkpoint, require_architecture=True)
 
 
 def main():
@@ -66,22 +67,11 @@ Examples:
         sys.exit(1)
     
     # Initialize model from checkpoint config
-    config_dict = checkpoint.get("config", {})
-    config = M01Config(
-        vocab_size=config_dict.get("vocab_size", 16384),
-        context_length=config_dict.get("context_length", 256),
-        d_model=config_dict.get("d_model", 256),
-        n_heads=config_dict.get("n_heads", 4),
-        d_ff=config_dict.get("d_ff", 512),
-        n_layers=config_dict.get("n_layers", 4),
-        num_experts=config_dict.get("num_experts", 4),
-        num_shared_experts=config_dict.get("num_shared_experts", 2),
-        moe_top_k=config_dict.get("moe_top_k", 2),
-        use_hybrid_attention=config_dict.get("use_hybrid_attention", True),
-        local_window_size=config_dict.get("local_window_size", 16),
-    )
+    config_dict = checkpoint["model_config"]
+    valid_fields = set(M01Config.__dataclass_fields__)
+    config = M01Config(**{k: v for k, v in config_dict.items() if k in valid_fields})
     model = TransformerLM(config)
-    model.load_state_dict(checkpoint["model_state_dict"])
+    model.load_state_dict(checkpoint["model_state"])
     model.to(args.device)
     model.eval()
     

@@ -6,6 +6,7 @@ corpus tokenized with the trained BPE tokenizer.
 
 import os
 
+import numpy as np
 import torch
 from torch import LongTensor
 
@@ -84,6 +85,58 @@ class TinyShakespeareDataset:
             tokens[idx:idx + seq_len] and target is
             tokens[idx + 1:idx + seq_len + 1].
         """
+        input_ids = self.tokens[idx: idx + self.seq_len]
+        target_ids = self.tokens[idx + 1: idx + self.seq_len + 1]
+        return input_ids, target_ids
+
+
+class BinaryCorpusDataset:
+    """Sliding-window dataset over pre-tokenized binary shards.
+
+    Reads ``shard_*.bin`` (uint16 big-endian, per build_info.txt) from a corpus
+    directory, concatenates the token IDs, and exposes the same ``(input,
+    target)`` sliding-window interface as TinyShakespeareDataset.
+
+    This is what trains M0.1 on the real ~10M-token corpus
+    (corpus1_es_wiki_wikisource_tech_10M) instead of the small raw-text files.
+    """
+
+    def __init__(self, config: TrainingConfig, corpus_dir: str | None = None) -> None:
+        self.seq_len = config.seq_len
+        if corpus_dir is None:
+            corpus_dir = os.path.join(config.data_dir, "corpus", "corpus1_es_wiki_wikisource_tech_10M")
+        self.corpus_dir = corpus_dir
+
+        shard_files = sorted(
+            f for f in os.listdir(corpus_dir)
+            if f.startswith("shard_") and f.endswith(".bin")
+        )
+        if not shard_files:
+            raise FileNotFoundError(f"No shard_*.bin found in {corpus_dir}")
+
+        chunks = []
+        for fname in shard_files:
+            with open(os.path.join(corpus_dir, fname), "rb") as fh:
+                raw = fh.read()
+            if not raw or len(raw) % 2:
+                raise ValueError(f"Invalid binary shard {fname}: expected non-empty uint16 data")
+            # uint16 big-endian per build_info.txt (vocab 16384 fits in uint16)
+            chunks.append(np.frombuffer(raw, dtype=">u2"))
+        tokens_np = np.concatenate(chunks).astype(np.int64)
+        if np.any(tokens_np < 0) or np.any(tokens_np >= 65536):
+            raise ValueError(f"Invalid token ID in canonical corpus {corpus_dir}")
+        self.tokens: LongTensor = torch.from_numpy(tokens_np)
+
+        if len(self.tokens) < self.seq_len:
+            raise ValueError(
+                f"Corpus length ({len(self.tokens)}) is shorter than sequence "
+                f"length ({self.seq_len}). Reduce seq_len or use a larger corpus."
+            )
+
+    def __len__(self) -> int:
+        return max(0, len(self.tokens) - self.seq_len)
+
+    def __getitem__(self, idx: int):
         input_ids = self.tokens[idx: idx + self.seq_len]
         target_ids = self.tokens[idx + 1: idx + self.seq_len + 1]
         return input_ids, target_ids

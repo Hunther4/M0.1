@@ -17,7 +17,7 @@ from src.model.block import TransformerBlock
 def base_config() -> M01Config:
     """Default config with num_experts=1 (dense FF)."""
     config = M01Config(
-        vocab_size=32768,
+        vocab_size=16384,
         context_length=512,
         d_model=128,  # smaller for faster tests
         n_heads=4,
@@ -32,7 +32,7 @@ def base_config() -> M01Config:
 def moe_config() -> M01Config:
     """Config with num_experts=4 (MoE)."""
     config = M01Config(
-        vocab_size=32768,
+        vocab_size=16384,
         context_length=512,
         d_model=128,
         n_heads=4,

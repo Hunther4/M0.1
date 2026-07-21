@@ -54,10 +54,10 @@ def main():
     # 1. Determine load path (latest -> base -> random init)
     if os.path.exists(latest_path):
         print(f"Resuming training: Loading latest checkpoint: {latest_path}")
-        checkpoint = torch.load(latest_path, map_location="cpu")
+        checkpoint = torch.load(latest_path, map_location="cpu", weights_only=True)
     elif os.path.exists(base_path):
         print(f"Starting from base weights: Loading base checkpoint: {base_path}")
-        checkpoint = torch.load(base_path, map_location="cpu")
+        checkpoint = torch.load(base_path, map_location="cpu", weights_only=True)
     else:
         print("No existing checkpoints found. Initializing random weights...")
         # 180M Architecture definition

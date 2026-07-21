@@ -105,9 +105,10 @@ class MoELayer(nn.Module):
         if self.training:
             f = expert_mask.mean(dim=1)  # (num_experts,)
             P = gate_probs.mean(dim=0)   # (num_experts,)
-            # DeepSeek-style Router Z-Loss penalizing large gate logits
-            z_loss = 0.001 * torch.mean(torch.logsumexp(gate_logits, dim=-1) ** 2)
-            self.current_aux_loss = self.num_experts * torch.sum(f * P) + z_loss
+            # DeepSeek-style load balancing: num_experts * sum(f * P)
+            self.current_aux_loss = self.num_experts * torch.sum(f * P)
+            # Z-Loss is computed separately via get_z_loss() to avoid double-counting
+            # when LossPipeline's RouterZLossTerm is also used.
         else:
             self.current_aux_loss = torch.tensor(0.0, device=x.device, dtype=x.dtype)
 
@@ -137,5 +138,22 @@ class MoELayer(nn.Module):
         return output.view(batch_size, seq_len, d_model)
 
     def get_aux_loss(self) -> torch.Tensor:
-        """Return the auxiliary load balancing loss calculated during the last forward pass."""
+        """Return the auxiliary load balancing loss (WITHOUT z-loss).
+
+        Z-loss is computed separately via get_z_loss() to avoid double-counting
+        when RouterZLossTerm in LossPipeline is also used in the training loop.
+        """
         return getattr(self, "current_aux_loss", torch.tensor(0.0, device=self.gate.weight.device))
+
+    def get_z_loss(self) -> torch.Tensor:
+        """Return the Router Z-Loss computed during the last forward pass.
+
+        Z-Loss = mean(logsumexp(gate_logits)²) — penalizes large unnormalized gate logits
+        to prevent routing collapse (DeepSeek-style).
+
+        Returns zero tensor when not in training mode or when gate_logits are unavailable.
+        """
+        gate_logits = getattr(self, "gate_logits", None)
+        if gate_logits is not None:
+            return torch.mean(torch.logsumexp(gate_logits, dim=-1) ** 2)
+        return torch.tensor(0.0, device=self.gate.weight.device)

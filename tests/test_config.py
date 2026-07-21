@@ -6,7 +6,7 @@ def test_m01config_defaults():
     config = M01Config()
     
     # Global parameters from architecture.md
-    assert config.vocab_size == 32768
+    assert config.vocab_size == 16384
     assert config.context_length == 8192
     assert config.d_model == 640
     assert config.n_heads == 10

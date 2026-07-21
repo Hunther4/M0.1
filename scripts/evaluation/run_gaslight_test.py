@@ -22,7 +22,7 @@ def main():
     tokenizer.load("data/tokenizer_final_8k.json")
     
     checkpoint_path = "checkpoints/m01_corrected.pt"
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
     config = M01Config(
         vocab_size=len(tokenizer.vocab),
         context_length=256,

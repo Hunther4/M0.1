@@ -51,19 +51,8 @@ class RouterZLossTerm(BaseLoss):
         super().__init__("RouterZLoss", weight)
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor, model: Optional[nn.Module] = None) -> torch.Tensor:
-        if model is not None:
-            total_z_loss = torch.tensor(0.0, device=targets.device)
-            count = 0
-            for block in getattr(model, "blocks", []):
-                ff = getattr(block, "ff", None)
-                if ff is not None and hasattr(ff, "gate"):
-                    gate_logits = getattr(ff, "gate_probs", None)
-                    if gate_logits is not None:
-                        z_loss = torch.mean(torch.logsumexp(gate_logits, dim=-1) ** 2)
-                        total_z_loss = total_z_loss + z_loss
-                        count += 1
-            if count > 0:
-                return total_z_loss / count
+        if model is not None and hasattr(model, "get_z_loss"):
+            return model.get_z_loss()
         return torch.tensor(0.0, device=targets.device)
 
 

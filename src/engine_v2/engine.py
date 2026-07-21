@@ -15,7 +15,7 @@ from .fsm import StateMachine, EngineState
 from .bus import EventBus, EngineEvent
 from .loss_pipeline import LossPipeline, CrossEntropyLossTerm, RouterAuxLossTerm, RouterZLossTerm
 from .metrics import MetricRegistry
-from .checkpoint_v2 import AsyncCheckpointManagerV2
+from .checkpoint_v2 import AsyncCheckpointManagerV2, normalize_checkpoint_state, safe_load_checkpoint
 from .experiment import ExperimentManager
 from .profiler import GranularProfiler
 from .plugins import BasePlugin
@@ -103,6 +103,8 @@ class TrainingEngineV2:
 
         # 8. Graceful Signal Handlers
         self.should_stop = False
+        self.current_step = 0
+        self.global_tokens = 0
         self.setup_signal_handlers()
 
         self.bus.publish(EngineEvent.ENGINE_INIT, engine=self)
@@ -114,6 +116,8 @@ class TrainingEngineV2:
             self.should_stop = True
 
         signal.signal(signal.SIGINT, _handler)
+        if hasattr(signal, "SIGTERM"):
+            signal.signal(signal.SIGTERM, _handler)
 
     def setup_model_hooks(self) -> None:
         """Register PyTorch Forward Hooks to capture MoE and attention telemetry automatically."""
@@ -136,15 +140,20 @@ class TrainingEngineV2:
         knowledge on top of a previous run's checkpoint). Otherwise the current run's canonical
         checkpoint is used.
         """
-        if checkpoint_path is not None and os.path.exists(checkpoint_path):
+        if checkpoint_path is not None:
+            if not os.path.exists(checkpoint_path):
+                raise FileNotFoundError(f"Explicit resume checkpoint not found: {checkpoint_path}")
             print(f"[RESUME] Loading checkpoint from {checkpoint_path}")
-            state = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+            state = safe_load_checkpoint(Path(checkpoint_path))
         else:
             state = self.checkpoint_mgr.load_canonical()
+        state = normalize_checkpoint_state(state, require_architecture=True)
         self._assert_config_compatible(state)
         self.model.load_state_dict(state["model_state"])
-        self.optimizer.load_state_dict(state["optimizer_state"])
-        self.scheduler.load_state_dict(state["scheduler_state"])
+        if "optimizer_state" in state:
+            self.optimizer.load_state_dict(state["optimizer_state"])
+        if "scheduler_state" in state:
+            self.scheduler.load_state_dict(state["scheduler_state"])
 
         if self.ema and "ema_state" in state:
             self.ema.load_state_dict(state["ema_state"])
@@ -155,7 +164,9 @@ class TrainingEngineV2:
         if "rng_states" in state:
             AsyncCheckpointManagerV2.restore_rng_states(state["rng_states"])
 
-        resumed_step = state.get("step", 0)
+        resumed_step = int(state.get("step", 0))
+        self.current_step = resumed_step
+        self.global_tokens = int(state.get("global_tokens", state.get("tokens_seen", 0)))
         print(f"[RESUME] Restored execution state at step {resumed_step + 1}")
         return resumed_step
 
@@ -164,7 +175,7 @@ class TrainingEngineV2:
 
         Prevents silently corrupting a "stacked" model by resuming onto an incompatible checkpoint.
         """
-        saved = state.get("model_config")
+        saved = state.get("model_config") or state.get("config")
         if not saved:
             return
         cur = getattr(self.model, "config", None)
@@ -235,13 +246,14 @@ class TrainingEngineV2:
         self.model.train()
         data_iter = iter(self.train_loader)
         batch_size = self.train_loader.batch_size or 4
-        global_tokens = 0
+        global_tokens = self.global_tokens
         step_loss = 0.0
         start_time = time.time()
 
-        for step in range(max_steps):
+        for step in range(self.current_step, max_steps):
             if self.should_stop:
-                print(f"[GRACEFUL SHUTDOWN] Stopping at step {step + 1}")
+                print(f"[GRACEFUL SHUTDOWN] Stopping at step {step}")
+                self.current_step = step
                 break
 
             self.bus.publish(EngineEvent.STEP_START, step=step)
@@ -305,6 +317,8 @@ class TrainingEngineV2:
                 self.profiler.stop("optimizer")
 
             global_tokens += batch_size * seq_len
+            self.current_step = step + 1
+            self.global_tokens = global_tokens
             elapsed_time = time.time() - start_time
             tok_s = int(global_tokens / max(elapsed_time, 1e-6))
             vram_mb = torch.cuda.memory_allocated() / 1e6 if torch.cuda.is_available() else 0.0
@@ -325,7 +339,8 @@ class TrainingEngineV2:
             self.bus.publish(EngineEvent.STEP_END, step=step, loss=step_loss)
 
             # Validation with EMA weights
-            if (step + 1) % 500 == 0 and self.val_loader is not None:
+            val_interval = int(getattr(self.config, "val_interval", 500))
+            if val_interval > 0 and (step + 1) % val_interval == 0 and self.val_loader is not None:
                 self.fsm.transition_to(EngineState.VALIDATE)
                 self.bus.publish(EngineEvent.VALIDATION_START)
                 val_loss = self._validate_with_ema()
@@ -334,18 +349,19 @@ class TrainingEngineV2:
                 self.fsm.transition_to(EngineState.TRAIN)
 
             # Save Canonical Checkpoint (Async Background Save)
-            if (step + 1) % 1000 == 0 or self.should_stop:
-                self.save_checkpoint(step=step, global_tokens=global_tokens)
+            save_interval = int(getattr(self.config, "save_interval", 1000))
+            if (save_interval > 0 and (step + 1) % save_interval == 0) or self.should_stop:
+                self.save_checkpoint(step=self.current_step, global_tokens=global_tokens)
 
         # Ensure canonical checkpoint is saved at end of fit()
-        self.save_checkpoint(step=max_steps, global_tokens=global_tokens)
+        self.save_checkpoint(step=self.current_step, global_tokens=global_tokens)
         self.checkpoint_mgr.wait_completion()
-        self.profiler.export(self.experiment.run_dir / "training_profile.json", total_tokens=global_tokens, total_batches=max_steps)
+        self.profiler.export(self.experiment.run_dir / "training_profile.json", total_tokens=global_tokens, total_batches=self.current_step)
 
         self.fsm.transition_to(EngineState.FINISHED)
         self.bus.publish(EngineEvent.TRAIN_END)
 
-        summary = {"final_step": max_steps, "final_loss": step_loss, "total_tokens": global_tokens}
+        summary = {"final_step": self.current_step, "final_loss": step_loss, "total_tokens": global_tokens}
         self.experiment.save_summary(summary)
         return summary
 

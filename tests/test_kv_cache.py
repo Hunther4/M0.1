@@ -41,3 +41,11 @@ def test_kv_cache_view_not_clone():
     # Check if full_k is a view (data_ptr should match)
     # The clone() implementation in KVCache makes it fail
     assert full_k.data_ptr() == cache.k.data_ptr()
+
+
+def test_kv_cache_rejects_batch_change_after_tokens():
+    cache = KVCache(10, 1, 2)
+    cache.append(torch.zeros(1, 1, 1, 2), torch.zeros(1, 1, 1, 2))
+
+    with pytest.raises(ValueError, match="batch size"):
+        cache.append(torch.zeros(2, 1, 1, 2), torch.zeros(2, 1, 1, 2))

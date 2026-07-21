@@ -14,16 +14,22 @@ from typing import Dict, Any
 class ExperimentManager:
     """Manages experiment directory structure under runs/XXXX/."""
 
-    def __init__(self, base_dir: str = "runs") -> None:
+    def __init__(self, base_dir: str = "runs", run_name: str | None = None) -> None:
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
-        self.run_dir = self._create_next_run_dir()
+        self.run_dir = self._create_next_run_dir(run_name)
         self.checkpoints_dir = self.run_dir / "checkpoints"
         self.checkpoints_dir.mkdir(exist_ok=True)
         self.metrics_file = self.run_dir / "metrics.jsonl"
 
-    def _create_next_run_dir(self) -> Path:
+    def _create_next_run_dir(self, run_name: str | None = None) -> Path:
         """Find next available run number (0001, 0002, etc.)."""
+        if run_name is not None:
+            if not run_name or Path(run_name).name != run_name or run_name in {".", ".."}:
+                raise ValueError("run_name must be a single non-empty directory name")
+            run_dir = self.base_dir / run_name
+            run_dir.mkdir(parents=True, exist_ok=True)
+            return run_dir
         existing = [d for d in self.base_dir.iterdir() if d.is_dir() and d.name.isdigit()]
         if not existing:
             next_num = 1

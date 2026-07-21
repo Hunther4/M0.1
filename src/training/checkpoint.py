@@ -6,6 +6,7 @@ atomic checkpoint operations.
 """
 
 import os
+from dataclasses import fields
 from typing import Any, Dict
 
 import torch
@@ -24,25 +25,7 @@ def config_to_dict(config):
     Returns:
         dict with the 11 core M01Config fields.
     """
-    result = {
-        "vocab_size": config.vocab_size,
-        "context_length": config.context_length,
-        "d_model": config.d_model,
-        "n_heads": config.n_heads,
-        "d_ff": config.d_ff,
-        "n_layers": config.n_layers,
-        "num_experts": config.num_experts,
-        "num_shared_experts": config.num_shared_experts,
-        "moe_top_k": config.moe_top_k,
-        "use_hybrid_attention": config.use_hybrid_attention,
-        "local_window_size": config.local_window_size,
-    }
-    # Include optional MoE fields if present and not None
-    if hasattr(config, "d_ff_shared") and config.d_ff_shared is not None:
-        result["d_ff_shared"] = config.d_ff_shared
-    if hasattr(config, "d_ff_routed") and config.d_ff_routed is not None:
-        result["d_ff_routed"] = config.d_ff_routed
-    return result
+    return {field.name: getattr(config, field.name) for field in fields(config)}
 
 
 def save_checkpoint(model, config, path):
@@ -89,24 +72,18 @@ def load_checkpoint(path, device="cpu"):
 
     from src.model.lm import TransformerLM
 
-    checkpoint = torch.load(path, map_location=device)
-    ckpt_config = checkpoint["config"]
-
-    config = M01Config(
-        vocab_size=ckpt_config["vocab_size"],
-        context_length=ckpt_config["context_length"],
-        d_model=ckpt_config["d_model"],
-        n_heads=ckpt_config["n_heads"],
-        d_ff=ckpt_config["d_ff"],
-        n_layers=ckpt_config["n_layers"],
-        num_experts=ckpt_config["num_experts"],
-        num_shared_experts=ckpt_config["num_shared_experts"],
-        moe_top_k=ckpt_config["moe_top_k"],
-        use_hybrid_attention=ckpt_config["use_hybrid_attention"],
-        local_window_size=ckpt_config["local_window_size"],
-    )
+    checkpoint = torch.load(path, map_location=device, weights_only=True)
+    state_key = "model_state" if "model_state" in checkpoint else "model_state_dict"
+    config_key = "model_config" if "model_config" in checkpoint else "config"
+    if state_key not in checkpoint or config_key not in checkpoint:
+        raise ValueError("Checkpoint must contain model state and configuration metadata")
+    ckpt_config = checkpoint[config_key]
+    if not isinstance(ckpt_config, dict):
+        raise ValueError("Checkpoint configuration metadata must be a dictionary")
+    valid_fields = {field.name for field in fields(M01Config)}
+    config = M01Config(**{key: value for key, value in ckpt_config.items() if key in valid_fields})
     model = TransformerLM(config).to(device)
-    model.load_state_dict(checkpoint["model_state_dict"])
+    model.load_state_dict(checkpoint[state_key])
 
     return model, config
 

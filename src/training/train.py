@@ -5,6 +5,7 @@ ROCm GPU entry: ``.\\venv_rocm\\Scripts\\python.exe -m src.training.train``
 """
 
 import argparse
+import os
 import sys
 import math
 import time
@@ -17,7 +18,7 @@ from torch.utils.data import DataLoader
 from src.model.lm import TransformerLM
 from src.transformer.config import M01Config
 from src.training.config import TrainingConfig
-from src.training.dataset import TinyShakespeareDataset
+from src.training.dataset import TinyShakespeareDataset, BinaryCorpusDataset
 from src.engine_v2.engine import TrainingEngineV2
 from src.engine_v2.experiment import ExperimentManager
 
@@ -71,6 +72,26 @@ def worker_init_fn(worker_id: int) -> None:
     random.seed(worker_seed)
 
 
+def build_training_dataset(config: TrainingConfig):
+    """Select the canonical binary corpus, or the legacy text fallback.
+
+    A present canonical directory is an explicit request to use that corpus;
+    malformed or empty contents must not silently train on another dataset.
+    """
+    canonical_dir = os.path.join(
+        config.data_dir, "corpus", "corpus1_es_wiki_wikisource_tech_10M"
+    )
+    if os.path.isdir(canonical_dir):
+        try:
+            return BinaryCorpusDataset(config, canonical_dir)
+        except (FileNotFoundError, ValueError, OSError) as exc:
+            raise RuntimeError(
+                f"Canonical corpus exists but is unusable: {canonical_dir}. "
+                "Repair its shard_*.bin files instead of falling back to TinyShakespeare."
+            ) from exc
+    return TinyShakespeareDataset(config)
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train M0.1 Transformer with TrainingEngineV2.")
     parser.add_argument("--data-dir", type=str, default="data")
@@ -90,6 +111,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         help="Resume training. No path -> canonical checkpoint of this run; "
                              "with a path -> stack knowledge on top of that checkpoint file.")
     parser.add_argument("--vocab-size", type=int, default=16384, help="Model vocab size (must match tokenizer; 16384 = new 16k tokenizer)")
+    parser.add_argument("--run-name", type=str, default=None,
+                        help="Pin the run directory name under runs/ (e.g. run_test) instead of auto-numbering.")
     return parser.parse_args(argv)
 
 
@@ -107,6 +130,7 @@ def main() -> None:
         max_norm=args.max_norm,
         log_interval=args.log_interval,
         save_interval=args.save_interval,
+        val_interval=args.val_interval,
         data_dir=args.data_dir,
     )
 
@@ -117,7 +141,7 @@ def main() -> None:
     print(f"[M0.1 TRAINING ENGINE V2] Running on {device}")
 
     # Dataset & Loaders with worker_init_fn
-    full_dataset = TinyShakespeareDataset(train_config)
+    full_dataset = build_training_dataset(train_config)
     train_size = int(0.95 * len(full_dataset))
     val_size = len(full_dataset) - train_size
     train_ds, val_ds = torch.utils.data.random_split(full_dataset, [train_size, val_size])
@@ -146,7 +170,9 @@ def main() -> None:
     optimizer = configure_optimizer(model, train_config)
     scheduler = get_lr_scheduler(optimizer, train_config.warmup_steps, train_config.max_steps, train_config.min_lr_ratio)
 
-    experiment_mgr = ExperimentManager(base_dir="runs")
+    # TrainingEngineV2 does not currently expose activation checkpointing; the
+    # old --grad-checkpoint flag was removed rather than silently ignored.
+    experiment_mgr = ExperimentManager(base_dir="runs", run_name=args.run_name)
 
     engine = TrainingEngineV2(
         model=model,

@@ -15,7 +15,7 @@ class KVCache:
     Supports dynamic batch resizing if needed.
     """
     
-    def __init__(self, max_seq_len: int, n_heads: int, d_head: int, device: torch.device | None = None) -> None:
+    def __init__(self, max_seq_len: int, n_heads: int, d_head: int, device: torch.device | None = None, dtype: torch.dtype | None = None) -> None:
         """Initialize KV cache with pre-allocated buffers.
         
         Args:
@@ -28,10 +28,11 @@ class KVCache:
         self.n_heads = n_heads
         self.d_head = d_head
         self.device = device or torch.device("cpu")
+        self.dtype = dtype or torch.float32
         
         # Pre-allocate K and V buffers with zeros (default batch_size = 1, expands dynamically)
-        self.k = torch.zeros(1, max_seq_len, n_heads, d_head, device=self.device)
-        self.v = torch.zeros(1, max_seq_len, n_heads, d_head, device=self.device)
+        self.k = torch.zeros(1, max_seq_len, n_heads, d_head, device=self.device, dtype=self.dtype)
+        self.v = torch.zeros(1, max_seq_len, n_heads, d_head, device=self.device, dtype=self.dtype)
         
         # Track current position
         self._seq_len = 0
@@ -48,11 +49,22 @@ class KVCache:
         """
         batch_size = k.shape[0]
         new_len = k.shape[1]
+
+        if self._seq_len and batch_size != self.k.shape[0]:
+            raise ValueError(
+                "KV cache batch size cannot change after tokens are cached; reset the cache first"
+            )
+        if self._seq_len and (k.device != self.k.device or k.dtype != self.k.dtype or v.device != self.v.device or v.dtype != self.v.dtype):
+            raise ValueError("KV cache device and dtype cannot change after tokens are cached")
+
+        if self._seq_len == 0 and (k.device != self.k.device or k.dtype != self.k.dtype):
+            self.device = k.device
+            self.dtype = k.dtype
         
         # Dynamically adjust batch size if it doesn't match the cache allocation
-        if self.k.shape[0] != batch_size:
-            self.k = torch.zeros(batch_size, self.max_seq_len, self.n_heads, self.d_head, device=self.device, dtype=k.dtype)
-            self.v = torch.zeros(batch_size, self.max_seq_len, self.n_heads, self.d_head, device=self.device, dtype=v.dtype)
+        if self.k.shape[0] != batch_size or self.k.device != k.device or self.k.dtype != k.dtype:
+            self.k = torch.zeros(batch_size, self.max_seq_len, self.n_heads, self.d_head, device=k.device, dtype=k.dtype)
+            self.v = torch.zeros(batch_size, self.max_seq_len, self.n_heads, self.d_head, device=v.device, dtype=v.dtype)
             self._seq_len = 0
             
         if self._seq_len + new_len > self.max_seq_len:
