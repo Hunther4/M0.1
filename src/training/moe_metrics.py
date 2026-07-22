@@ -61,7 +61,7 @@ def router_entropy(moe: nn.Module, normalize: bool = True) -> float:
     """Mean per-token normalized entropy: 0 = deterministic, 1 = uniform."""
     probs = moe.gate_probs
     n = moe.num_experts
-    per_token = -(probs * torch.log(probs + 1e-8)).sum(dim=-1)
+    per_token = -(probs * torch.log(probs + 1e-4)).sum(dim=-1)
     mean = float(per_token.mean().item())
     if normalize and n > 1:
         return min(mean / math.log(n), 1.0)
@@ -102,8 +102,8 @@ def top2_frequency(moe: nn.Module, num_experts: int | None = None) -> list[float
 
 
 def top4_overlap(moe: nn.Module) -> float:
-    """Not meaningful with tk < 4. Returns 0.0 until Stage 4+."""
-    return 0.0  # placeholder for Stage 4
+    """Not meaningful with top_k < 4. Returns 0.0 (current model uses top-2)."""
+    return 0.0
 
 
 # ── Health Metrics ────────────────────────────────────────────────────────────
@@ -161,12 +161,19 @@ def detect_router_collapse(
     histogram: torch.Tensor | list[int],
     counter: int,
     threshold: int,
+    expert_ratio: float = 0.0,
 ) -> tuple[bool, int]:
-    """Detect router collapse based on consecutive zero-expert steps."""
+    """Detect router collapse based on consecutive under-utilized steps.
+
+    ``expert_ratio`` controls how many experts must be unused before a step is
+    considered collapsed. A value of zero preserves the legacy any-dead-expert
+    behavior.
+    """
     if isinstance(histogram, torch.Tensor):
-        has_dead = bool((histogram == 0).any().item())
+        dead_ratio = float((histogram == 0).float().mean().item())
     else:
-        has_dead = any(count == 0 for count in histogram)
+        dead_ratio = sum(count == 0 for count in histogram) / max(len(histogram), 1)
+    has_dead = dead_ratio >= expert_ratio if expert_ratio > 0.0 else dead_ratio > 0.0
     if has_dead:
         counter += 1
     else:
@@ -280,5 +287,5 @@ class ConsoleLogger:
         print(f"  Entropy: {metrics.get('global/mean_entropy', 0):.3f}  "
               f"Gini: {metrics.get('global/mean_gini', 0):.3f}  "
               f"Dead: {metrics.get('global/total_dead', 0)}  "
-              f"Collapse: {'⚠' if metrics.get('global/router_collapse', False) else '✓'}")
+              f"Collapse: {'!' if metrics.get('global/router_collapse', False) else 'OK'}")
         print(end="", flush=True)

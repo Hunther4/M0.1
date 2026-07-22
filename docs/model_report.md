@@ -12,13 +12,13 @@ See `src/transformer/config.py` for the authoritative source.
 
 | Parameter | Value |
 |---|---|
-| Parameters | ~110M (MoE Stage 1) |
+| Parameters | ~99.7M |
 | d_model | 640 |
 | n_layers | 12 |
 | n_heads | 10 |
 | d_head | 64 |
 | vocab_size | **16384** (single tokenizer: `data/tokenizers/tokenizer.json`) |
-| num_experts | 4 (routed) + 1 (shared), top-1 routing |
+| num_experts | 4 (routed) + 1 (shared), top-2 routing |
 | d_ff | 1728 |
 | context_length | 8192 |
 | Attention | MLA (Multi-head Latent Attention) with RoPE |

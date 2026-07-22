@@ -103,3 +103,9 @@ scratch/
 results/
 artifacts/
 Openspecs_AI/
+
+# Training run artifacts (logs, metrics, profiles — regenerated each run)
+runs/
+
+# Temp / scratch scripts (not source)
+.temp_*

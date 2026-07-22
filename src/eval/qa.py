@@ -1,6 +1,7 @@
-"""Qualitative benchmarks: coherence and NIAH testing."""
-import math
+"""Qualitative coherence and needle-in-a-haystack benchmarks."""
+
 import torch
+import torch.nn.functional as F
 from torch import Tensor
 from torch.nn import Module
 
@@ -20,112 +21,123 @@ def coherence_test(
     prompt: str,
     tokenizer,
     interval: int = 128,
-    max_length: int = 512
+    max_length: int = 512,
 ) -> dict:
-    """Test coherence at token intervals.
-    
-    Args:
-        model: The language model to evaluate
-        prompt: Input prompt text
-        tokenizer: Tokenizer to encode the prompt
-        interval: Token interval for local perplexity measurement (default 128)
-        max_length: Maximum generation length
-        
-    Returns:
-        Dictionary with interval perplexities and average coherence score
-    """
+    """Report token perplexity by interval while preserving the full prefix."""
+    if interval < 1:
+        raise ValueError("interval must be positive")
+    if max_length < 2:
+        raise ValueError("max_length must be at least 2")
+
     model.eval()
-    device = _model_device(model)
-    
-    encoded = tokenizer.encode(prompt)
-    input_ids = torch.tensor(encoded, device=device).unsqueeze(0)
-    
-    interval_perplexities = []
-    
+    encoded = tokenizer.encode(prompt)[:max_length]
+    input_ids = torch.tensor(encoded, device=_model_device(model)).unsqueeze(0)
+    interval_perplexities: list[float] = []
+
+    # A single causal forward gives every token its real preceding context.
+    # Reporting intervals only aggregate losses; they do not detach history.
     with torch.no_grad():
-        for start in range(0, min(len(encoded) - 1, max_length), interval):
-            end = min(start + interval, len(encoded) - 1)
-            segment = input_ids[:, start:end]
-            
-            logits = model(segment)
-            probs = torch.softmax(logits, dim=-1)
-            
-            # Get next token probability
-            if end < input_ids.size(1):
-                next_token = input_ids[:, end]
-                next_token_prob = probs[0, -1, next_token.item()].item()
-                # Perplexity = 1/p, not exp(-p)
-                segment_perplexity = 1.0 / max(next_token_prob, 1e-10)
-                interval_perplexities.append(segment_perplexity)
-    
-    avg_coherence = sum(interval_perplexities) / len(interval_perplexities) if interval_perplexities else float("inf")
-    
+        if input_ids.size(1) > 1:
+            logits = model(input_ids)
+            prediction_count = min(logits.size(1) - 1, input_ids.size(1) - 1)
+            if prediction_count > 0:
+                token_losses = F.cross_entropy(
+                    logits[:, :prediction_count].reshape(-1, logits.size(-1)),
+                    input_ids[:, 1 : prediction_count + 1].reshape(-1),
+                    reduction="none",
+                )
+                for start in range(0, prediction_count, interval):
+                    interval_loss = token_losses[start : start + interval].mean()
+                    interval_perplexities.append(torch.exp(interval_loss).item())
+
+    average = (
+        sum(interval_perplexities) / len(interval_perplexities)
+        if interval_perplexities
+        else float("inf")
+    )
     return {
         "interval_perplexities": interval_perplexities,
-        "average_coherence": avg_coherence,
-        "interval": interval
+        "average_coherence": average,
+        "interval": interval,
+        "evaluated_tokens": max(0, min(len(encoded) - 1, input_ids.size(1) - 1)),
     }
 
 
 def niah_test(
     model: Module,
-    prompt: str,
+    haystack_text: str,
     needle: str,
     tokenizer,
-    context_length: int = 512
+    context_length: int = 512,
+    depth: float = 0.5,
+    query: str = "What was the hidden fact? Answer exactly: ",
 ) -> dict:
-    """Needle in a Haystack test - retrieve a specific fact from context.
-    
-    Args:
-        model: The language model to evaluate
-        prompt: Base context/prompt containing the needle
-        needle: The specific piece of information to retrieve
-        tokenizer: Tokenizer to encode inputs
-        context_length: Length of context window (default 512)
-        
-    Returns:
-        Dictionary with retrieval accuracy and details
+    """Measure teacher-forced retrieval of a fact inserted at a chosen depth.
+
+    The needle is inserted once in the filler. A retrieval query is appended
+    after the complete context and the model is scored on reproducing the
+    needle as its answer, so local continuation of the inserted phrase cannot
+    satisfy the benchmark.
     """
+    if not 0.1 <= depth <= 0.9:
+        raise ValueError("depth must be in the interval [0.1, 0.9]")
+    if context_length < 1:
+        raise ValueError("context_length must be positive")
+
     model.eval()
     device = _model_device(model)
-    
-    # Combine prompt with needle
-    haystack = f"{prompt} {needle}"
-    encoded = tokenizer.encode(haystack)
-    
-    # Truncate to context length
-    if len(encoded) > context_length:
-        # Keep the appended target span, rather than dropping it from the
-        # right side of the haystack.
-        encoded = encoded[-context_length:]
-    
-    input_ids = torch.tensor(encoded, device=device).unsqueeze(0)
-    
+    filler_tokens = tokenizer.encode(haystack_text)
+    needle_tokens = tokenizer.encode(needle)
+    query_tokens = tokenizer.encode(query)
+    if not needle_tokens:
+        raise ValueError("needle must encode to at least one token")
+
+    available = context_length - 2 * len(needle_tokens) - len(query_tokens)
+    if available < 1:
+        query_tokens = tokenizer.encode("?")
+        available = context_length - 2 * len(needle_tokens) - len(query_tokens)
+    if available < 1:
+        return {
+            "needle": needle,
+            "avg_probability": 0.0,
+            "accuracy": 0.0,
+            "context_length": context_length,
+            "error": "context_too_short",
+        }
+
+    filler = filler_tokens[:available]
+    insert_at = min(len(filler), max(0, round(len(filler) * depth)))
+    context_ids = filler[:insert_at] + needle_tokens + filler[insert_at:]
+    answer_start = len(context_ids) + len(query_tokens)
+    full_ids = context_ids + query_tokens + needle_tokens
+    input_ids = torch.tensor([full_ids], device=device)
+
     with torch.no_grad():
-        logits = model(input_ids)
-        probs = torch.softmax(logits, dim=-1)
-        
-        # Find needle tokens — they are at the END of the haystack
-        needle_tokens = tokenizer.encode(needle)
-        
-        # Calculate probability of generating needle tokens at their correct positions
-        # (needle is appended to prompt, so it sits at the end of the sequence)
-        needle_probs = []
-        needle_start_pos = len(encoded) - len(needle_tokens)
-        for offset, token in enumerate(needle_tokens[:4]):  # Check first 4 tokens of needle
-            pos = needle_start_pos + offset
-            prediction_pos = pos - 1
-            if 0 <= prediction_pos < input_ids.size(1):
-                token_prob = probs[0, prediction_pos, token].item()
-                needle_probs.append(token_prob)
-        
-        avg_needle_prob = sum(needle_probs) / len(needle_probs) if needle_probs else 0.0
-        # Accuracy: fraction of needle tokens that were predicted with high probability (>0.01)
-        accuracy = sum(1 for p in needle_probs if p > 0.01) / len(needle_probs) if needle_probs else 0.0
-    
+        probabilities = torch.softmax(model(input_ids), dim=-1)
+        needle_probabilities: list[float] = []
+        correct = 0
+        for offset, token in enumerate(needle_tokens):
+            prediction_position = answer_start + offset - 1
+            if 0 <= prediction_position < probabilities.size(1):
+                distribution = probabilities[0, prediction_position]
+                needle_probabilities.append(distribution[token].item())
+                correct += int(distribution.argmax().item() == token)
+
+    average_probability = (
+        sum(needle_probabilities) / len(needle_probabilities)
+        if needle_probabilities
+        else 0.0
+    )
+    accuracy = correct / len(needle_probabilities) if needle_probabilities else 0.0
     return {
         "needle": needle,
-        "avg_probability": avg_needle_prob,
+        "avg_probability": average_probability,
         "accuracy": accuracy,
-        "context_length": context_length
+        "context_length": context_length,
+        "needle_start_token": insert_at,
+        "answer_start_token": answer_start,
+        "depth": depth,
+        "actual_depth": insert_at / max(1, len(filler)),
+        "haystack_unique_token_ratio": len(set(filler)) / max(1, len(filler)),
+        "haystack_total_tokens": len(full_ids),
     }

@@ -22,7 +22,8 @@ def train(
     val_loader=None,
     target_loss=None,
     max_batches=30,
-    collapse_streak_threshold=0,
+    collapse_streak_threshold=None,
+    config=None,
 ):
     """Run the shared training loop.
 
@@ -49,8 +50,10 @@ def train(
         val_loader: Optional DataLoader for validation loss computation.
         target_loss: Optional float; stop training if loss drops below this.
         max_batches: Maximum number of validation batches to use (default 30).
-        collapse_streak_threshold: Consecutive zero-expert steps before
-            collapse stop. 0 disables collapse detection (default 0).
+        collapse_streak_threshold: Optional explicit collapse threshold. When
+            ``config`` is supplied, its MoE setting takes precedence.
+        config: Optional TrainingConfig. Its MoE collapse threshold and dead
+            expert ratio are read when supplied.
 
     Returns:
         dict with keys:
@@ -65,6 +68,12 @@ def train(
     last_loss = 0.0
     stop_reason = None
     collapse_counters: dict[str, int] = {}
+    collapse_expert_ratio = 0.0
+    if config is not None:
+        collapse_streak_threshold = config.moe_collapse_consecutive_steps
+        collapse_expert_ratio = config.moe_collapse_expert_ratio
+    elif collapse_streak_threshold is None:
+        collapse_streak_threshold = 0
 
     while not done:
         for x, y in dataloader:
@@ -110,6 +119,7 @@ def train(
                 _log_moe_and_check_collapse(
                     model, step + 1, collapse_counters,
                     collapse_streak_threshold,
+                    collapse_expert_ratio,
                 )
                 # Check if collapse was detected by checking counters
                 if collapse_streak_threshold > 0:
@@ -148,6 +158,7 @@ def _log_moe_and_check_collapse(
     step: int,
     collapse_counters: dict[str, int],
     collapse_streak_threshold: int,
+    collapse_expert_ratio: float = 0.0,
 ) -> None:
     """Compute MoE metrics, log them, and update collapse counters.
 
@@ -158,6 +169,8 @@ def _log_moe_and_check_collapse(
             Modified in-place.
         collapse_streak_threshold: Threshold for collapse detection.
             0 disables detection.
+        collapse_expert_ratio: Fraction of unused experts required to mark a
+            step as collapsed. Zero means any unused expert.
     """
     # Check if model exposes MoE metrics
     if not hasattr(model, "get_moe_metrics"):
@@ -180,5 +193,7 @@ def _log_moe_and_check_collapse(
         if not key.endswith("/histogram"):
             continue
         ctr = collapse_counters.get(key, 0)
-        _stop, ctr = detect_router_collapse(val, ctr, collapse_streak_threshold)
+        _stop, ctr = detect_router_collapse(
+            val, ctr, collapse_streak_threshold, expert_ratio=collapse_expert_ratio
+        )
         collapse_counters[key] = ctr

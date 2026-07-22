@@ -38,5 +38,8 @@ class RMSNorm(nn.Module):
         # Compute RMS along last dimension in FP32 to avoid FP16 overflow
         x_fp32 = x.float()
         rms = torch.sqrt(torch.mean(x_fp32 ** 2, dim=-1, keepdim=True) + self.eps)
-        # Normalize, cast back to input dtype, and scale
-        return (x_fp32 / rms).to(x.dtype) * self.gamma
+        # Keep the learnable parameter in its storage dtype, but perform the
+        # final multiply in the activation dtype. Otherwise an FP32 gamma
+        # silently promotes FP16/BF16 activations back to FP32.
+        normalized = (x_fp32 / rms).to(dtype=x.dtype)
+        return normalized * self.gamma.to(dtype=x.dtype)

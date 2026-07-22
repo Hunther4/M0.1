@@ -1,7 +1,7 @@
 """Tests for training components: TinyShakespeareDataset, CheckpointManager, and integration.
 
 TinyShakespeareDataset requirements:
-- Loads BPE tokenizer from data/tokenizer.json
+- Loads the canonical BPE tokenizer from data/tokenizers/tokenizer.json
 - Tokenizes data/tinyshakespeare.txt once at init → LongTensor
 - __getitem__(i) returns (input, target) LongTensors of shape (seq_len,)
 - Input = tokens[i:i+seq_len], target = tokens[i+1:i+seq_len+1]

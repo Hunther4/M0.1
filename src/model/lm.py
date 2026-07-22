@@ -8,6 +8,7 @@ and providing a single gradient signal through the embedding matrix.
 
 from typing import List, Optional
 
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
@@ -16,7 +17,7 @@ from src.model.block import TransformerBlock
 from src.model.rms_norm import RMSNorm
 from src.transformer.config import M01Config
 from src.transformer.embeddings import TokenEmbedding
-from src.transformer.kv_cache import KVCache
+from src.transformer.kv_cache import AttentionCache
 
 
 class TransformerLM(nn.Module):
@@ -51,7 +52,7 @@ class TransformerLM(nn.Module):
     def forward(
         self,
         token_ids: Tensor,
-        kv_caches: Optional[List[Optional[KVCache]]] = None,
+        kv_caches: Optional[List[Optional[AttentionCache]]] = None,
     ) -> Tensor:
         """Forward pass through the full transformer stack.
 
@@ -67,6 +68,11 @@ class TransformerLM(nn.Module):
         # Embed tokens: (batch, seq_len) -> (batch, seq_len, d_model)
         x = self.embedding(token_ids)
 
+        if kv_caches is not None and len(kv_caches) != len(self.blocks):
+            raise ValueError(
+                f"Expected {len(self.blocks)} KV caches, got {len(kv_caches)}"
+            )
+
         # Pass through each transformer block
         for i, block in enumerate(self.blocks):
             cache = kv_caches[i] if kv_caches is not None else None
@@ -79,19 +85,24 @@ class TransformerLM(nn.Module):
         return self.output_head(x)
 
     def get_aux_loss(self) -> Tensor:
-        """Collect and sum the auxiliary load balancing losses from all child MoELayers."""
-        import torch
-        aux_loss = torch.tensor(0.0, device=self.norm.gamma.device)
+        """Collect and average auxiliary losses from all child MoE layers."""
+        aux_loss = torch.tensor(0.0, device=self.embedding.embedding.weight.device)
+        count = 0
         for block in self.blocks:
             if hasattr(block.ff, "get_aux_loss"):
                 aux_loss += block.ff.get_aux_loss()
-        return aux_loss
+                count += 1
+        return aux_loss / count if count > 0 else aux_loss
+
+    def set_moe_step(self, step: int) -> None:
+        """Propagate the training step to every MoE feed-forward layer."""
+        for block in self.blocks:
+            if hasattr(block.ff, "set_step"):
+                block.ff.set_step(step)
 
     def get_z_loss(self) -> Tensor:
-        """Collect and sum Router Z-Loss from all child MoELayers."""
-        import torch
-
-        z_loss = torch.tensor(0.0, device=self.norm.gamma.device)
+        """Collect and average Router Z-Loss from all child MoE layers."""
+        z_loss = torch.tensor(0.0, device=self.embedding.embedding.weight.device)
         count = 0
         for block in self.blocks:
             if hasattr(block.ff, "get_z_loss"):

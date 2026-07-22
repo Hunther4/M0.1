@@ -122,12 +122,47 @@ class TestLMParamCount:
     """Parameter count verification."""
 
     def test_param_count_default_config(self, full_config) -> None:
-        """Default config (MoE Stage 1: 4+1 tk1) MUST have 110_225_536 parameters."""
+        """Default config (4 routed + 1 shared, top-2) MUST have 99_739_776 parameters."""
         model = TransformerLM(full_config)
         total = sum(p.numel() for p in model.parameters())
         assert total == 99_739_776, (
             f"Expected 99_739_776 params, got {total}"
         )
+
+
+class TestLMInitialization:
+    """Depth-aware initialization for residual projections."""
+
+    def test_residual_projection_std_scales_with_depth(self) -> None:
+        config = M01Config(
+            vocab_size=128,
+            context_length=32,
+            d_model=128,
+            n_heads=4,
+            d_ff=256,
+            n_layers=4,
+            num_experts=2,
+            num_shared_experts=1,
+            num_dense_layers=1,
+            d_ff_shared=256,
+            d_ff_routed=128,
+            use_mla=False,
+        )
+        model = TransformerLM(config)
+        expected = config.initializer_range / (2 * config.n_layers) ** 0.5
+
+        projections = [block.attn.W_o.weight for block in model.blocks]
+        for block in model.blocks:
+            if hasattr(block.ff, "down_proj"):
+                projections.append(block.ff.down_proj.weight)
+            else:
+                projections.extend(
+                    expert.down_proj.weight
+                    for expert in [*block.ff.shared_experts, *block.ff.experts]
+                )
+
+        for weight in projections:
+            assert weight.std().item() == pytest.approx(expected, rel=0.15)
 
 
 class TestLMGradientFlow:

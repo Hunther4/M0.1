@@ -80,9 +80,9 @@ def main(argv: list[str] | None = None) -> None:
     model.eval()
     print(f"Loaded step {state.get('step', 0)}, loss {state.get('loss', 'N/A')}")
 
-    # Load tokenizer
+    # Load tokenizer (use the 16K vocab matching the checkpoint tokenizer_hash)
     tokenizer = Tokenizer()
-    tokenizer.load(os.path.join(os.path.dirname(__file__), "..", "..", "data", "splits", "tokenizer.json"))
+    tokenizer.load(os.path.join(os.path.dirname(__file__), "..", "..", "data", "tokenizers", "tokenizer.json"))
 
     print(f"\nPrompt: {args.prompt}")
     print("Generating...\n")

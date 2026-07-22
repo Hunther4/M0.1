@@ -20,7 +20,7 @@ The system MUST provide an `M01Config` dataclass in `src/transformer/config.py` 
 | d_ff | 1728 | Feedforward hidden dimension |
 | n_layers | 12 | Number of transformer layers |
 | rope_theta | 10000.0 | RoPE base frequency |
-| num_experts | 4 | Number of MoE routed experts (4 routed + 1 shared = Stage 1 MoE) |
+| num_experts | 4 | Number of MoE routed experts (4 routed + 1 shared) |
 | num_shared_experts | 1 | Number of shared experts (always active) |
 | moe_top_k | 1 | Number of active routed experts per token |
 | dropout | 0.0 | Dropout rate |

@@ -15,7 +15,7 @@ Decoder-only transformer language model from scratch in PyTorch. Research-grade 
 
 M0.1 is a **from-scratch decoder-only transformer language model** built for research and experimentation with modern architecture techniques. Rather than wrapping existing libraries, every component -- from the attention mechanism to the training loop -- is implemented directly in PyTorch, providing full visibility and control for research purposes.
 
-The project targets approximately **181M parameters** at full scale and currently operates at Stage 1 (~110M parameters) with 4 routed experts and 1 shared expert. It is trained on TinyShakespeare and custom Spanish text corpora, using a trained BPE tokenizer.
+The project currently operates with 4 routed experts, 1 shared expert, and top-2 routing, trained on custom Spanish text corpora using a trained BPE tokenizer.
 
 The architecture incorporates techniques from state-of-the-art models:
 - **Multi-head Latent Attention (MLA)** from DeepSeek-V2/V3, reducing KV cache footprint by compressing key-value states into a low-rank latent space.
@@ -110,19 +110,6 @@ where `g_i(x)` is the gate probability for expert `i` (re-normalized among the t
 - **Load balancing loss**: `num_experts * sum(f * P)` where `f` is the fraction of tokens assigned to each expert and `P` is the average gate probability. This encourages uniform routing.
 - **Router Z-loss**: `0.001 * mean(logsumexp(gate_logits)^2)` penalizes large gate logits, preventing routing collapse without compromising model quality.
 
-**Expert scaling ladder (5 stages):**
-
-The project defines a staged scaling plan that keeps the active parameter count per token roughly constant while increasing expert diversity. The routed expert hidden dimension (`d_ff_routed`) decreases as the number of experts increases, maintaining computational efficiency.
-
-| Stage | Routed | Shared | Top-K | d_ff_routed | d_ff_shared | Total params | Active params/token |
-|-------|--------|--------|-------|-------------|-------------|-------------|-------------------|
-| 1 (current) | 4 | 1 | 1 | 640 | 1,024 | ~110M | ~540K |
-| 2 | 8 | 2 | 2 | 448 | 768 | ~120M | ~580K |
-| 3 | 16 | 2 | 2 | 256 | 640 | ~134M | ~520K |
-| 4 | 32 | 4 | 4 | 128 | 432 | ~151M | ~500K |
-| 5 | 40 | 5 | 4 | 112 | 384 | ~164.5M | ~500K |
-
-The fixed base (embedding, attention, and 2 dense layers) accounts for approximately 41.4M parameters. The dense reference layer uses `d_ff=1728`, giving approximately 3.32M active parameters per dense layer. Each MoE stage targets roughly the same active parameter count per token as approximately 0.5x-0.6x of a dense layer.
 
 ### SwiGLU FeedForward
 
@@ -170,7 +157,7 @@ Root Mean Square Normalization normalizes the input by its root mean square, the
 RMSNorm(x) = (x / sqrt(mean(x^2) + eps)) * gamma
 ```
 
-The normalization is computed in FP32 to avoid overflow in FP16/BF16, then cast back to the original dtype before scaling. RMSNorm is applied as pre-norm before both the attention and feedforward sublayers in every transformer block.
+The normalization is computed in FP32 to avoid overflow in FP16/BF16, then both the normalized activation and `gamma` are cast to the activation dtype for the final multiply. This prevents an FP32 parameter from silently promoting mixed-precision activations. RMSNorm is applied as pre-norm before both the attention and feedforward sublayers in every transformer block.
 
 ### Router Z-Loss
 
@@ -439,7 +426,7 @@ model.load_state_dict(torch.load("path/to/checkpoint.pt", weights_only=True)["mo
 model.eval().to("cuda")
 
 tokenizer = Tokenizer()
-tokenizer.load("data/tokenizer.json")
+tokenizer.load("data/tokenizers/tokenizer.json")
 
 text = generate(model, tokenizer, "To be, or not to be", max_gen_len=200, temperature=0.8)
 print(text)
@@ -529,7 +516,7 @@ M0.1/
 ├── docs/                       # Architecture and design documentation
 ├── scripts/                    # Training and evaluation scripts
 ├── artifacts/                  # Generated artifacts
-├── moe_calc.py                 # MoE scaling ladder calculator
+
 ├── requirements.txt            # Python dependencies
 ├── pytest.ini                  # Pytest configuration
 └── README.md                   # This file
@@ -571,30 +558,16 @@ The test suite covers:
 
 ## Roadmap
 
-### MoE Scaling Stages
-
-The expert scaling ladder is the primary development axis:
-
-- **Stage 1 (current):** 4+1 routed/shared experts, top-1 routing, d_ff_routed=640. Validation of basic MoE training dynamics, Gini coefficient measurement, router entropy monitoring. Approximately 110M parameters.
-- **Stage 2:** 8+2 experts, top-2 routing, d_ff_routed=448. Balance testing with multiple active experts per token. Measurement of expert specialization patterns.
-- **Stage 3:** 16+2 experts, top-2 routing, d_ff_routed=256. Entropy and coefficient of variation measurement at moderate scale.
-- **Stage 4:** 32+4 experts, top-4 routing, d_ff_routed=128. DeepSeek-lite configuration with fine-grained experts.
-- **Stage 5:** 40+5 experts, top-4 routing, d_ff_routed=112, d_ff_shared=384. Full-scale configuration targeting approximately 164.5M total parameters (~181M with embedding tying accounted).
-
 ### Training Infrastructure
 
-- Validation on larger datasets (The Pile, C4 subsets, or Spanish corpora).
-- Distributed training (DDP / FSDP) for larger model scales.
 - Extended inference optimization (speculative decoding, KV cache quantization).
 - WandB or MLflow integration for remote experiment tracking.
 - Hyperparameter optimization sweeps for LR, warmup, weight decay, and MoE-specific parameters.
-- Automatic MoE expert analysis: per-expert token clustering to identify learned specializations.
 
 ### Research Directions
 
 - Expert merging and pruning experiments to reduce inference cost.
 - Comparative analysis of attention variants (MLA vs MHA vs Hybrid) at identical parameter counts.
-- Capacity factor implementation for bounded expert load in MoE layers.
 - Joint optimization of Z-loss weight and load balancing loss coefficients.
 - Analysis of the relationship between router entropy, Gini coefficient, and model quality (validation loss).
 

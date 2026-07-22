@@ -46,6 +46,20 @@ def test_output_head_tied_weights():
     expected = torch.nn.functional.linear(hidden, embed.embedding.weight)
     assert torch.allclose(logits, expected, atol=1e-5)
 
+def test_output_head_uses_same_scale_as_input_embedding():
+    """A non-default scale must be symmetric across the tied matrix."""
+    config = M01Config(vocab_size=32, d_model=16, n_heads=4)
+    embed = TokenEmbedding(config)
+    embed.scale = 2.5
+    hidden = torch.randn(2, 3, config.d_model)
+
+    logits = embed.output_head(hidden)
+    expected = torch.nn.functional.linear(
+        hidden, embed.embedding.weight * embed.scale
+    )
+
+    assert torch.allclose(logits, expected)
+
 def test_embedding_gradient_flow():
     """Test that gradients flow through tied weights."""
     config = M01Config()

@@ -7,6 +7,7 @@ atomic checkpoint operations.
 
 import os
 from dataclasses import fields
+from pathlib import Path
 from typing import Any, Dict
 
 import torch
@@ -14,6 +15,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 from src.transformer.config import M01Config
+from src.engine_v2.checkpoint_v2 import safe_load_checkpoint
 
 
 def config_to_dict(config):
@@ -72,7 +74,7 @@ def load_checkpoint(path, device="cpu"):
 
     from src.model.lm import TransformerLM
 
-    checkpoint = torch.load(path, map_location=device, weights_only=True)
+    checkpoint = safe_load_checkpoint(Path(path), map_location=device)
     state_key = "model_state" if "model_state" in checkpoint else "model_state_dict"
     config_key = "model_config" if "model_config" in checkpoint else "config"
     if state_key not in checkpoint or config_key not in checkpoint:
@@ -177,7 +179,7 @@ class CheckpointManager:
                 "Train the model first or check the checkpoint_dir path."
             )
 
-        checkpoint = torch.load(final_path, weights_only=True)
+        checkpoint = safe_load_checkpoint(Path(final_path))
 
         model.load_state_dict(checkpoint["model_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])

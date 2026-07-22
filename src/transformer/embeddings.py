@@ -32,7 +32,11 @@ class TokenEmbedding(nn.Module):
         self.scale = 1.0
         
         # Initialize weights (optional, can use default)
-        nn.init.normal_(self.embedding.weight, mean=0.0, std=0.02)
+        nn.init.normal_(
+            self.embedding.weight,
+            mean=0.0,
+            std=config.initializer_range,
+        )
     
     def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
         """Embed token IDs and scale.
@@ -58,6 +62,7 @@ class TokenEmbedding(nn.Module):
         Returns:
             (batch, seq_len, vocab_size) logits
         """
-        # Use F.linear with embedding.weight as weight, no bias
-        # This ensures gradient flows back to embedding.weight
-        return F.linear(hidden, self.embedding.weight, None)
+        # Apply the same scale on both uses of the tied matrix. The default is
+        # 1.0, so this is backward-compatible while keeping future scales
+        # symmetric between input embeddings and output projection.
+        return F.linear(hidden, self.embedding.weight * self.scale, None)

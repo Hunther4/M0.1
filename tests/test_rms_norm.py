@@ -179,3 +179,15 @@ class TestRMSNormNumerics:
             assert rms.gamma.grad is not None, (
                 f"gamma.grad is None for d_model={d_model}"
             )
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    def test_mixed_precision_output_preserves_input_dtype(self, dtype) -> None:
+        """An FP32 gamma MUST NOT promote mixed-precision activations."""
+        rms = RMSNorm(64)
+        x = torch.randn(2, 4, 64, dtype=dtype)
+
+        out = rms(x)
+
+        assert rms.gamma.dtype == torch.float32
+        assert out.dtype == dtype
+        assert torch.isfinite(out).all()

@@ -1,66 +1,76 @@
-# Canonical Single Checkpoint System
+# Canonical Checkpoint System
 
-**Manager:** `AsyncCheckpointManagerV2` (`src/engine_v2/checkpoint_v2.py`). Atomic write:
-`checkpoint.pt.tmp` → `os.replace()` → `checkpoint.pt`. No separate `checkpoint.previous.pt` file in
-the current engine — recovery rolls back by re-loading the existing canonical `checkpoint.pt` (see
-Recovery below).
+`TrainingEngineV2` uses `AsyncCheckpointManagerV2` from `src/engine_v2/checkpoint_v2.py`.
 
-## Canonical File
+## Files and atomic save
 
-- `runs/<run-name>/checkpoints/checkpoint.pt` (single canonical checkpoint per run).
+Each run can contain:
 
-## State Preserved
+- `checkpoint.pt`: current canonical checkpoint.
+- `checkpoint.pt.sha256`: checksum of the canonical file.
+- `checkpoint.previous.pt`: previous canonical generation.
+- `checkpoint.previous.pt.sha256`: checksum of the previous generation.
 
-`TrainingEngineV2.save_checkpoint()` writes exactly these keys:
+A save writes `checkpoint.pt.tmp`, calculates its checksum, preserves the existing canonical file as the previous generation and atomically replaces `checkpoint.pt`. The manager serializes saves and propagates background write failures through `wait_completion()`.
+
+## Load and recovery
+
+`load_canonical()` waits for an active save, verifies SHA-256 and loads the first valid candidate in this order:
+
+1. `checkpoint.pt`.
+2. `checkpoint.previous.pt`.
+
+If neither candidate has a valid sidecar/checksum, loading fails explicitly. Legacy V1/V2 key aliases are normalized at the deserialization boundary.
+
+All loaders retain `weights_only=True`. Current checkpoints serialize `M01Config` as a plain dictionary. Legacy checkpoints that embedded an `M01Config` object are supported through a scoped allowlist and are immediately normalized to a dictionary; unrelated pickle globals remain rejected. The allowlist does not persist after the load.
+
+## Model manipulation
+
+- `merge_checkpoints.py` requires identical configuration, keys, shapes and dtypes. MoE parameters are rejected by default because expert order is permutation-invariant; `copy-first` or `copy-second` may copy the complete expert/router set without interpolation.
+- `expand_model.py` preserves the dense/MoE boundary and scales copied attention-output and FFN-down projections by `sqrt(old_layers / new_layers)` by default. Use the explicit `none` strategy only when exact copying is intended.
+
+## State preserved
 
 | Key | Content |
-|-----|---------|
+|---|---|
 | `step`, `global_tokens` | Training progress counters |
-| `model_state` | Model weights (`state_dict`) |
-| `optimizer_state` | AdamW optimizer state |
+| `model_state` | Model weights |
+| `optimizer_state` | Optimizer state |
 | `scheduler_state` | LR scheduler state |
-| `ema_state` | EMA shadow weights (if EMA enabled) |
-| `amp_scaler_state` | AMP GradScaler state |
-| `rng_states` | Python / NumPy / Torch / ROCm RNG snapshots |
-| `metrics` | MetricRegistry snapshot |
-| `env` | Environment metadata (GPU, torch, ROCm) |
-| `dataset_hash` | SHA-256 of `data/spanish_pretrain.txt` (if present) |
-| `tokenizer_hash` | **SHA-256 of `data/tokenizers/tokenizer.json`** |
-| `model_config` | **Full `M01Config` dict** (architecture fingerprint) |
+| `ema_state` | EMA state when enabled |
+| `amp_scaler_state` | AMP state |
+| `rng_states` | Python, NumPy, Torch and CUDA/ROCm RNG snapshots |
+| `metrics` | Metric registry snapshot |
+| `env` | Environment and Git metadata |
+| `dataset_hash` | SHA-256 manifest of the source files actually exposed by the training dataset |
+| `tokenizer_hash` | SHA-256 of the tokenizer used by the configured data directory |
+| `model_config` | Full model configuration |
 
-## Resume API
+Dataset and tokenizer fingerprints are cached once per engine instance. If a custom dataset does not expose `source_files`, `dataset_hash` is recorded as `unknown` rather than attributing a different corpus.
+
+## Resume compatibility
 
 ```python
-engine.resume()                 # resumes current run's canonical checkpoint.pt
-engine.resume("path/to/ckpt.pt") # stacks knowledge onto an explicit checkpoint (layer-stacking)
+engine.resume()
+engine.resume("path/to/checkpoint.pt")
 ```
 
-- With an explicit, existing path → loads that file directly (used to **stack** knowledge in layers).
-- With `None` (or missing file) → loads the current run's canonical `checkpoint.pt`.
+- No path loads the current run's canonical/backup pair.
+- An explicit path loads that checkpoint directly.
+- `vocab_size`, `n_layers`, `d_model`, `num_experts` and `num_shared_experts` must match.
+- Compatible parameter shapes are loaded; incompatible optimizer/EMA tensors are reinitialized safely.
+- `moe_top_k` is intentionally not a shape guard, allowing a deliberate Top-1 to Top-2 routing-policy migration with unchanged expert parameters.
 
-## `_assert_config_compatible()` — Stacking Guard
+## Bounded automatic recovery
 
-Before loading, `resume()` compares the saved `model_config` against the current model. It raises
-`ValueError` if any of these differ:
+On a failed health check, the engine:
 
-- `vocab_size`
-- `n_layers`
-- `d_model`
-- `num_experts`
-- `num_shared_experts`
-- `moe_top_k`
+1. Enters `RECOVERING` and waits for checkpoint I/O.
+2. Restores model, optimizer, scheduler, AMP, RNG and counters.
+3. Repositions the data iterator for deterministic loaders.
+4. Reduces optimizer and scheduler LR anchors.
+5. Retries from the restored step.
 
-This prevents silently corrupting a "stacked" model by resuming onto an architecturally incompatible
-checkpoint.
+Consecutive failures are bounded by `max_recovery_attempts` (default `3`). Exhaustion transitions to terminal `ERROR` and raises `RuntimeError`; LR is never reduced indefinitely.
 
-## Automatic Recovery (NaN/Inf/Overflow)
-
-On a health-check failure mid-`fit()`:
-1. Flush CUDA cache.
-2. `self.resume()` → restore the last clean canonical `checkpoint.pt`.
-3. Halve the LR (`lr *= 0.5`) and continue.
-
-## Graceful Shutdown
-
-Intercepts `SIGINT`/`SIGTERM`, sets a stop flag, saves the canonical `checkpoint.pt`, flushes loggers,
-and exports the profiler.
+Exact batch replay requires a deterministic loader/sampler. Custom shuffled or distributed samplers must persist their own state if exact ordering across rollback is required.

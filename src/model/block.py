@@ -12,7 +12,7 @@ from src.transformer.config import M01Config
 from src.transformer.attention import CausalSelfAttention
 from src.transformer.feedforward import FeedForward
 from src.transformer.moe import MoELayer
-from src.transformer.kv_cache import KVCache
+from src.transformer.kv_cache import AttentionCache
 from src.model.rms_norm import RMSNorm
 
 
@@ -46,7 +46,7 @@ class TransformerBlock(nn.Module):
     def forward(
         self,
         x: Tensor,
-        kv_cache: Optional[KVCache] = None,
+        kv_cache: Optional[AttentionCache] = None,
     ) -> Tensor:
         """Forward pass with pre-norm residual connections.
 

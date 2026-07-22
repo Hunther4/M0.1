@@ -80,8 +80,6 @@ Examples:
     # Load tokenizer
     tokenizer = Tokenizer()
     tokenizer_path = Path("data/tokenizers/tokenizer.json")
-    if not tokenizer_path.exists():
-        tokenizer_path = Path("data/tokenizer.json")
 
     if tokenizer_path.exists():
         tokenizer.load(str(tokenizer_path))
@@ -99,7 +97,12 @@ Examples:
     # Use first 10k chars for eval
     val_text = val_text[:10000]
     val_tokens = tokenizer.encode(val_text)
-    
+
+    if not val_tokens:
+        logger.warning("Validation text produced 0 tokens after encoding; using fallback")
+        val_text = "The quick brown fox jumps over the lazy dog. " * 100
+        val_tokens = tokenizer.encode(val_text)
+
     logger.info(f"Evaluating on first {min(len(val_tokens), 512)} of {len(val_tokens)} tokens")
     
     # Quantitative metrics — use 512 token window for speed
@@ -124,10 +127,28 @@ Examples:
     
     if args.niah:
         logger.info("Running NIAH test...")
-        # Create a haystack with a needle
-        prompt = "The secret code is 42. " * 30
-        needle = "42"
-        niah_result = niah_test(model, prompt, needle, tokenizer)
+        # Diverse haystack text (NOT repetitive) — needle embedded at ~50%
+        haystack_text = (
+            "The history of computing spans centuries of innovation. "
+            "Charles Babbage designed the Analytical Engine in the 1830s. "
+            "Ada Lovelace wrote the first algorithm intended for a machine. "
+            "Alan Turing formalized computation with the Turing machine concept. "
+            "John von Neumann introduced the stored-program architecture. "
+            "The ENIAC, completed in 1945, was the first general-purpose electronic computer. "
+            "Grace Hopper developed the first compiler for a programming language. "
+            "The transistor replaced vacuum tubes in the 1950s, making computers smaller and faster. "
+            "Integrated circuits enabled the miniaturization of electronic components. "
+            "The Apollo guidance computer navigated spacecraft to the Moon. "
+            "ARPANET, the predecessor to the Internet, first connected four nodes in 1969. "
+            "The microprocessor revolution began with the Intel 4004 in 1971. "
+            "Personal computers transformed offices and homes in the 1980s. "
+            "Tim Berners-Lee invented the World Wide Web in 1989. "
+            "Machine learning algorithms began solving problems previously thought impossible. "
+            "Deep learning breakthroughs in the 2010s transformed natural language processing. "
+            "Quantum computing promises to solve problems intractable for classical computers. "
+        )
+        needle = "The secret code is 42"
+        niah_result = niah_test(model, haystack_text, needle, tokenizer)
         results["qa"] = results.get("qa", {})
         results["qa"]["niah"] = niah_result
         logger.info(f"NIAH accuracy: {niah_result['accuracy']:.4f}")

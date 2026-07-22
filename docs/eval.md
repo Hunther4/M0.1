@@ -7,7 +7,7 @@ Evaluation tools for the M0.1 model.
 `evaluate.py` reconstructs the model from the checkpoint's embedded `config` dict, then loads the
 **real tokenizer**:
 
-- **Tokenizer path:** `data/tokenizers/tokenizer.json` (fallback: `data/tokenizer.json`).
+- **Tokenizer path:** `data/tokenizers/tokenizer.json`.
 - **Vocab size:** taken from the checkpoint's `config.vocab_size`; if absent, **defaults to `16384`**.
 - There is **no 32k tokenizer** — the only tokenizer is the 16k one used in training.
 
@@ -89,11 +89,13 @@ Measures how well the model predicts the validation data. Lower is better.
 
 ### Coherence
 
-Measures local perplexity at 128-token intervals to assess long-range coherence.
+Runs one causal forward over the complete bounded prompt, computes token-level negative log-likelihood and aggregates it into reporting intervals. Intervals never remove the preceding context.
 
 ### NIAH (Needle in a Haystack)
 
-Tests the model's ability to retrieve a specific piece of information from a larger context.
+Inserts the needle once into non-repetitive filler at a configurable depth between 10% and 90%. A retrieval query is appended after the complete context and the benchmark scores teacher-forced reproduction of the needle as the answer. Reported metadata includes requested/actual depth, answer position and filler token diversity.
+
+NIAH accuracy is exact token argmax accuracy; `avg_probability` reports mean probability assigned to the expected answer tokens. This prevents a repeated local phrase or a fixed probability threshold from counting as retrieval.
 
 ## Module Structure
 

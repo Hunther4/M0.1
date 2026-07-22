@@ -38,11 +38,15 @@ class Tokenizer:
         self.vocab = {i: bytes([i]) for i in range(256)}
         for name, val in self.special_tokens.items():
             self.vocab[val] = name.encode('utf-8')
-        
+
         self.inverse_vocab = {v: k for k, v in self.vocab.items()}
         self.merges = {}
 
-        num_merges = vocab_size - 258
+        # Compute the first available token ID after all special tokens.
+        # This avoids collisions when the caller adds extra specials beyond
+        # the default 256 (endoftext) and 257 (<|pad|>).
+        base_id = max(self.special_tokens.values()) + 1
+        num_merges = vocab_size - base_id
         if num_merges <= 0:
             return
 
@@ -86,7 +90,7 @@ class Tokenizer:
                 break
                 
             # Register new token
-            new_token_id = 258 + i
+            new_token_id = base_id + i
             self.merges[best_pair] = new_token_id
             
             # Reconstruct the byte representation for this new token
@@ -106,7 +110,9 @@ class Tokenizer:
                     pair_freqs[pair] -= count * freq
                     pair_to_words[pair].discard(word)
                     if not pair_to_words[pair]:
-                        del pair_freqs[pair]
+                        del pair_to_words[pair]
+                        if pair in pair_freqs:
+                            del pair_freqs[pair]
             
             # Merge the pair in affected words and add new contributions
             for word in affected_words:
@@ -273,8 +279,10 @@ class Tokenizer:
             else:
                 raise ValueError(f"Invalid value in vocab JSON: {val}")
 
-        # Reconstruct merges
+        # Reconstruct merges — derive parent IDs from the merge list order,
+        # matching the dynamic base_id used during training.
+        base_id = max(self.special_tokens.values()) + 1 if self.special_tokens else 258
         for i, pair_list in enumerate(data["merges"]):
             pair = (pair_list[0], pair_list[1])
-            parent_id = 258 + i
+            parent_id = base_id + i
             self.merges[pair] = parent_id

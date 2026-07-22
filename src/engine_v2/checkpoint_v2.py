@@ -11,33 +11,85 @@ import platform
 import shutil
 import random
 import pickle
+from dataclasses import fields
 from pathlib import Path
 from typing import Any, Dict, Optional
 import numpy as np
 import torch
 
+from src.transformer.config import M01Config
+
+
+def _normalize_legacy_config_metadata(state: Any) -> Dict[str, Any]:
+    """Convert explicitly supported legacy config objects to plain dictionaries."""
+    if not isinstance(state, dict):
+        raise ValueError("Checkpoint root must be a dictionary")
+
+    normalized = dict(state)
+    for key in ("config", "model_config"):
+        value = normalized.get(key)
+        if type(value) is M01Config:
+            normalized[key] = {
+                field.name: getattr(value, field.name)
+                for field in fields(M01Config)
+                if hasattr(value, field.name)
+            }
+    return normalized
+
 
 def safe_load_checkpoint(path: Path, map_location: str | torch.device = "cpu") -> Dict[str, Any]:
-    """Load tensors safely, with a narrow compatibility bridge for NumPy RNG tuples."""
-    try:
-        return torch.load(path, map_location=map_location, weights_only=True)
-    except (pickle.UnpicklingError, RuntimeError) as exc:
-        if "numpy" not in str(exc).lower():
-            raise
-        numpy_core = getattr(np, "_core", getattr(np, "core", None))
-        reconstruct = getattr(getattr(numpy_core, "multiarray", None), "_reconstruct", None)
-        safe_types = [item for item in (reconstruct, np.ndarray, np.dtype) if item is not None]
-        dtypes = getattr(np, "dtypes", None)
-        if dtypes is not None and hasattr(dtypes, "UInt32DType"):
-            safe_types.append(dtypes.UInt32DType)
-        with torch.serialization.safe_globals(safe_types):
-            return torch.load(path, map_location=map_location, weights_only=True)
+    """Load tensors safely, retrying with progressively broader safe globals.
+
+    Checkpoints saved with PyTorch <2.6 may contain serialized metadata types
+    (TorchVersion, NumPy globals) that are restricted by ``weights_only=True``
+    in PyTorch 2.6+.  This function catches those errors and re-adds the missing
+    types to a scoped safe allowlist, retrying until the load succeeds or an
+    unrecognised error is hit. Legacy ``M01Config`` objects are immediately
+    converted to the current dictionary format.
+    """
+    known_safe: list[Any] = []
+    # Pre-resolve NumPy globals once (avoid repeated getattr in the loop).
+    _numpy_core = getattr(np, "_core", getattr(np, "core", None))
+    _numpy_reconstruct = getattr(getattr(_numpy_core, "multiarray", None), "_reconstruct", None)
+    _numpy_scalar_repr = getattr(getattr(_numpy_core, "multiarray", None), "scalar_repr", None)
+
+    for attempt in range(10):
+        try:
+            with torch.serialization.safe_globals(known_safe):
+                state = torch.load(path, map_location=map_location, weights_only=True)
+            return _normalize_legacy_config_metadata(state)
+        except (pickle.UnpicklingError, RuntimeError) as exc:
+            msg = str(exc).lower()
+            candidates: list[Any] = []
+
+            if "src.transformer.config.m01config" in msg:
+                candidates.append(M01Config)
+
+            if "torch_version" in msg or "torchversion" in msg:
+                candidates.append(torch.torch_version.TorchVersion)
+
+            if "numpy" in msg:
+                for obj in (_numpy_reconstruct, np.ndarray, np.dtype, _numpy_scalar_repr):
+                    if obj is not None:
+                        candidates.append(obj)
+                dtypes = getattr(np, "dtypes", None)
+                if dtypes is not None and hasattr(dtypes, "UInt32DType"):
+                    candidates.append(dtypes.UInt32DType)
+
+            added = [candidate for candidate in candidates if candidate not in known_safe]
+            if not added:
+                raise  # Unknown or already-allowed type: preserve the safe-load failure.
+
+            known_safe.extend(added)
+
+    raise RuntimeError(
+        f"Failed to load checkpoint after 10 attempts: {path}"
+    )
 
 
 def normalize_checkpoint_state(state: Dict[str, Any], *, require_architecture: bool = False) -> Dict[str, Any]:
     """Normalize V1/V2 checkpoint aliases at the deserialization boundary."""
-    if not isinstance(state, dict):
-        raise ValueError("Checkpoint root must be a dictionary")
+    state = _normalize_legacy_config_metadata(state)
     aliases = {
         "model_state": ("model_state", "model_state_dict"),
         "model_config": ("model_config", "config"),
@@ -80,6 +132,17 @@ class AsyncCheckpointManagerV2:
         with open(filepath, "rb") as f:
             while chunk := f.read(65536):
                 hasher.update(chunk)
+        return hasher.hexdigest()
+
+    @staticmethod
+    def calculate_manifest_sha256(filepaths: list[Path]) -> str:
+        """Hash an ordered file manifest, including names and file contents."""
+        hasher = hashlib.sha256()
+        for filepath in sorted((Path(path) for path in filepaths), key=lambda path: path.as_posix()):
+            hasher.update(filepath.name.encode("utf-8"))
+            with open(filepath, "rb") as source:
+                while chunk := source.read(65536):
+                    hasher.update(chunk)
         return hasher.hexdigest()
 
     def capture_environment_metadata(self) -> Dict[str, Any]:
@@ -152,12 +215,29 @@ class AsyncCheckpointManagerV2:
         state_dict: Dict[str, Any],
         callback: Optional[callable] = None,
     ) -> None:
-        """Asynchronously save state to canonical checkpoint.pt with backup and SHA256 checksum."""
+        """Asynchronously save state to canonical checkpoint.pt with backup and SHA256 checksum.
+
+        Moves tensors to CPU before launching the background writer so CUDA D2H
+        transfers cannot race with the training loop.
+        """
+
+        def _to_cpu(value: Any) -> Any:
+            if isinstance(value, torch.Tensor):
+                return value.detach().cpu()
+            if isinstance(value, dict):
+                return {key: _to_cpu(item) for key, item in value.items()}
+            if isinstance(value, list):
+                return [_to_cpu(item) for item in value]
+            if isinstance(value, tuple):
+                return tuple(_to_cpu(item) for item in value)
+            return value
+
+        cpu_state = _to_cpu(state_dict)
 
         def _target():
             tmp_path = self.checkpoint_dir / "checkpoint.pt.tmp"
             try:
-                torch.save(state_dict, tmp_path)
+                torch.save(cpu_state, tmp_path)
                 sha256_val = self.calculate_sha256(tmp_path)
                 if self.canonical_path.exists():
                     shutil.copy2(self.canonical_path, self.backup_path)

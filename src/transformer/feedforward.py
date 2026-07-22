@@ -32,6 +32,11 @@ class FeedForward(nn.Module):
         self.gate_proj = nn.Linear(config.d_model, hidden_dim, bias=False)
         self.up_proj = nn.Linear(config.d_model, hidden_dim, bias=False)
         self.down_proj = nn.Linear(hidden_dim, config.d_model, bias=False)
+        nn.init.normal_(
+            self.down_proj.weight,
+            mean=0.0,
+            std=config.residual_init_std,
+        )
         
         # Store config for potential MoE usage
         self.config = config

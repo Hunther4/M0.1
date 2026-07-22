@@ -155,6 +155,21 @@ class TestGenerate:
                 max_gen_len=0,
             )
 
+    def test_generate_rejects_context_overflow(self, mini_model):
+        from src.inference.generate import generate
+        from src.tokenizer.bpe import Tokenizer
+
+        tokenizer = Tokenizer()
+        tokenizer.train(["a" * 200], vocab_size=258)
+
+        with pytest.raises(ValueError, match="context_length"):
+            generate(
+                model=mini_model,
+                tokenizer=tokenizer,
+                prompt="a" * mini_model.config.context_length,
+                max_gen_len=mini_model.config.context_length,
+            )
+
     def test_generate_produces_different_outputs_with_temp(self, mini_model):
         """Different temperatures MUST produce different outputs
         (statistical, not guaranteed but very likely with random logits)."""

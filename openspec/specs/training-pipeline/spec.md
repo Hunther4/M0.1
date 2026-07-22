@@ -74,7 +74,7 @@ The training pipeline MUST use exactly one tokenizer: `data/tokenizers/tokenizer
 
 **Scenarios:**
 
-- **Given** `train.py` is launched, **When** it loads a tokenizer, **Then** it MUST read `data/tokenizers/tokenizer.json` (fallback `data/tokenizer.json`).
+- **Given** `train.py` is launched, **When** it loads a tokenizer, **Then** it MUST read `data/tokenizers/tokenizer.json`.
 - **Given** the model is built, **When** `vocab_size` is set, **Then** it MUST equal 16384 to match the tokenizer.
 - **Given** a checkpoint `tokenizer_hash`, **When** computed, **Then** it MUST be the SHA-256 of `data/tokenizers/tokenizer.json` (prefix `6bc3a6…`).
 

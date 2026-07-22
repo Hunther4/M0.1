@@ -84,6 +84,24 @@ class TestCoherenceTest:
         
         assert isinstance(result, dict)
 
+    def test_coherence_uses_full_context_in_one_forward(self):
+        tokenizer = ExactTokenizer()
+
+        class RecordingModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.lengths = []
+
+            def forward(self, input_ids):
+                self.lengths.append(input_ids.shape[1])
+                return torch.zeros(1, input_ids.shape[1], 256)
+
+        model = RecordingModel()
+        result = coherence_test(model, "abcdefghijklmnopqrstuvwxyz", tokenizer, interval=5)
+
+        assert model.lengths == [26]
+        assert len(result["interval_perplexities"]) == 5
+
 
 class TestNiahTest:
     """Tests for niah_test function."""
@@ -183,3 +201,30 @@ class TestNiahTest:
         assert model.seen[0, -len(needle_tokens):].tolist() == needle_tokens
         assert result["accuracy"] == 1.0
         assert result["avg_probability"] > 0.99
+
+    def test_niah_reports_requested_depth_and_queries_after_context(self):
+        tokenizer = ExactTokenizer()
+
+        class RecordingModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.seen = None
+
+            def forward(self, input_ids):
+                self.seen = input_ids.detach().clone()
+                return torch.zeros(1, input_ids.shape[1], 256)
+
+        model = RecordingModel()
+        result = niah_test(
+            model,
+            "abcdefghij" * 10,
+            "CODE",
+            tokenizer,
+            context_length=96,
+            depth=0.8,
+            query="Answer: ",
+        )
+
+        assert result["actual_depth"] == pytest.approx(0.8, abs=0.02)
+        assert result["answer_start_token"] > result["needle_start_token"]
+        assert model.seen.shape[1] <= 96

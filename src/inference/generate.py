@@ -11,7 +11,7 @@ from src.inference.sampling import sample
 from src.model.lm import TransformerLM
 from src.tokenizer.bpe import Tokenizer
 from src.transformer.config import M01Config
-from src.transformer.kv_cache import KVCache
+from src.transformer.kv_cache import build_attention_cache
 
 
 def generate(
@@ -43,7 +43,8 @@ def generate(
         Generated text (prompt + continuation).
 
     Raises:
-        ValueError: If prompt is empty or max_gen_len < 1.
+        ValueError: If prompt is empty, max_gen_len < 1, or context
+            length would be exceeded.
     """
     if not prompt.strip():
         raise ValueError("Prompt must be non-empty")
@@ -54,11 +55,26 @@ def generate(
         device = next(model.parameters()).device
 
     prompt_ids = tokenizer.encode(prompt)
+
+    # Validate that prompt + generation fits within the model's context window
+    context_length = model.config.context_length
+    if len(prompt_ids) > context_length:
+        raise ValueError(
+            f"Prompt length ({len(prompt_ids)} tokens) exceeds model context "
+            f"length ({context_length}). Shorten the prompt."
+        )
+    if len(prompt_ids) + max_gen_len > context_length:
+        raise ValueError(
+            f"Prompt ({len(prompt_ids)} tokens) + max_gen_len ({max_gen_len}) "
+            f"exceeds context_length ({context_length})"
+        )
+
     generated: list[int] = list(prompt_ids)
 
     # Build KV caches: one per transformer layer
+    model_dtype = next(model.parameters()).dtype
     kv_caches = [
-        KVCache(model.config.context_length, model.config.n_heads, model.config.d_head, device)
+        build_attention_cache(model.config, device, model_dtype)
         for _ in range(model.config.n_layers)
     ]
 

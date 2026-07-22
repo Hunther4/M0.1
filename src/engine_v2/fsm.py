@@ -9,6 +9,7 @@ class EngineState(Enum):
     INIT = auto()
     LOAD = auto()
     TRAIN = auto()
+    RECOVERING = auto()
     VALIDATE = auto()
     SAVE = auto()
     EVALUATE = auto()
@@ -26,6 +27,8 @@ class StateMachine:
 
     def transition_to(self, new_state: EngineState) -> None:
         """Transition engine to a new state."""
+        if self.current_state is EngineState.ERROR and new_state is not EngineState.ERROR:
+            raise RuntimeError("EngineState.ERROR is terminal")
         self.history.append(new_state)
         self.current_state = new_state
 

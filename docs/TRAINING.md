@@ -1,6 +1,6 @@
 # M0.1 Training Guide
 
-**Status:** Documentation of the *validated* training pipeline (engine_v2). Corpús is available but **training is deferred** — no runs are executed today (see [Training Status](#training-status-deferred)).
+**Status:** The engine_v2 pipeline and architectural recovery suite are validated on CPU. Historical local runs exist; start new validation runs under a new run name and do not overwrite them.
 
 ## Quick Path (smoke test)
 
@@ -73,9 +73,9 @@ Because the **full model cannot be trained at once**, knowledge is stacked acros
 - explicit path → loads that file (layer-stacking).
 
 > 🔒 **`_assert_config_compatible()` guards stacking.** Resume raises `ValueError` if the saved
-> checkpoint's `vocab_size`, `n_layers`, `d_model`, `num_experts`, `num_shared_experts`, or
-> `moe_top_k` differ from the current model. This prevents silently corrupting a stacked model with an
-> incompatible architecture. (See `docs/Checkpoint.md`.)
+> checkpoint's `vocab_size`, `n_layers`, `d_model`, `num_experts`, or `num_shared_experts` differ from
+> the current model. `moe_top_k` may change deliberately because it changes routing policy without
+> changing expert parameter shapes. (See `docs/Checkpoint.md`.)
 
 ## Learning Rate Tuning
 
@@ -137,13 +137,13 @@ The following are **excluded from git** — do not expect them tracked:
 
 Checkpoints and runs live locally / in external storage, never in git.
 
-## Training Status (Deferred)
+## Training Status
 
-- **Corpus available & now active:** `data/corpus/corpus1_es_wiki_wikisource_tech_10M` (~9.99M tokens, uint16-BE shards per `build_info.txt`) is auto-loaded by `BinaryCorpusDataset` — the previous bug (training on `spanish_pretrain.txt` instead) is fixed.
-- **Second corpus available (separate):** `data/corpus/corpus2_es_wiki_gutenberg_17M` (~16.6M tokens, Wikipedia ES + Gutenberg ES, ZERO overlap with corpus 1). Not yet wired into training — point the corpus config to this folder to use it.
-- **`runs/` is deleted** — start from a clean state (no inherited checkpoints).
-- **No training runs execute today.** This document records the *validated* pipeline and findings so the next session can train immediately without re-deriving them.
+- `build_training_dataset()` selects `data/corpus/corpus2_es_wiki_gutenberg_17M` when present and valid, otherwise it uses the configured raw-text fallback.
+- `dataset_hash` fingerprints the source files actually loaded by the dataset and is cached per engine instance.
+- Historical `run_corpus2` and `run_corpus3` artifacts exist locally and must be treated as read-only baselines.
+- The recovery/attention/MoE suite is validated; GPU throughput and memory gates still require a new isolated smoke run.
 
 ## Next Step
 
-When training resumes: start with the [Quick Path](#quick-path-smoke-test) `run_test` (warmup 40, 250 steps, `max_lr=1.2e-3`, batch 16), confirm ~11 GB VRAM, then layer-stack from its checkpoint.
+Start with the [Quick Path](#quick-path-smoke-test) under a unique run name, confirm loss/VRAM/throughput, then decide whether to layer-stack from that new checkpoint. Do not point the smoke run at historical run directories.

@@ -90,8 +90,10 @@ class TestMoELayerAttrStorage:
         config = M01Config(num_experts=4, moe_top_k=2)
         moe1 = MoELayer(config)
         moe2 = MoELayer(config)
-        moe1.train()
-        moe2.train()
+        # Gate noise is intentionally active during training; use eval mode so
+        # this test isolates attribute storage from routing stochasticity.
+        moe1.eval()
+        moe2.eval()
         # Copy weights so both are identical
         moe2.load_state_dict(moe1.state_dict())
 
@@ -351,7 +353,7 @@ class TestComputeMoeMetrics:
             if key.endswith("/histogram"):
                 layer_sum += sum(val)
         # Histograms sum across all layers: batch × seq × top_k × n_moe_layers
-        total_tokens = 2 * 8 * 2 * 2  # batch=2, seq=8, top_k=2, n_layers=2
+        total_tokens = 2 * 8 * 2 * 2  # batch=2, seq=8, top_k=2, n_moe_layers=2
         assert layer_sum == total_tokens, (
             f"Histogram sum {layer_sum} != expected {total_tokens}"
         )
@@ -606,6 +608,9 @@ class TestCollapseEarlyStopIntegration:
         )
         model = TransformerLM(model_config)
         device = torch.device("cpu")
+        # Gate noise is a training-time exploration feature. Disable it here so
+        # zero gate weights deterministically exercise collapse detection.
+        model.eval()
 
         # Zero gate weights → all logits = 0 → tie → topk picks first expert
         # Freeze gate so optimizer doesn't change it → Expert 1 gets 0 tokens

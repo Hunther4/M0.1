@@ -15,9 +15,9 @@ def test_m01config_defaults():
     assert config.rope_theta == 10000.0
     assert config.num_experts == 4
     assert config.num_shared_experts == 1
-    assert config.moe_top_k == 1
-    assert config.d_ff_shared == 1024
-    assert config.d_ff_routed == 640
+    assert config.moe_top_k == 2
+    assert config.d_ff_shared == 448
+    assert config.d_ff_routed == 784
     assert config.dropout == 0.0
     
     # Derived parameter

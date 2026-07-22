@@ -1,6 +1,7 @@
 """Regression tests for the highest-priority audit fixes."""
 
 import pickle
+import threading
 
 import numpy as np
 import pytest
@@ -53,6 +54,49 @@ def test_legacy_numpy_rng_tuple_loads_safely(tmp_path):
     loaded = manager.load_canonical()
     manager.restore_rng_states(loaded)
     assert isinstance(loaded["numpy_rng"], tuple)
+
+
+def test_async_checkpoint_moves_nested_tensors_to_cpu_before_threading(tmp_path, monkeypatch):
+    """Checkpoint tensor snapshots must complete before the writer thread starts."""
+    manager = AsyncCheckpointManagerV2(str(tmp_path))
+    caller_thread = threading.current_thread()
+    transfer_threads = []
+    save_threads = []
+    original_detach = torch.Tensor.detach
+    original_cpu = torch.Tensor.cpu
+    original_save = torch.save
+
+    def track_detach(tensor):
+        transfer_threads.append(("detach", threading.current_thread()))
+        return original_detach(tensor)
+
+    def track_cpu(tensor):
+        transfer_threads.append(("cpu", threading.current_thread()))
+        return original_cpu(tensor)
+
+    def track_save(state, path):
+        save_threads.append(threading.current_thread())
+        return original_save(state, path)
+
+    monkeypatch.setattr(torch.Tensor, "detach", track_detach)
+    monkeypatch.setattr(torch.Tensor, "cpu", track_cpu)
+    monkeypatch.setattr(torch, "save", track_save)
+
+    manager.save_canonical_async(
+        {
+            "model_state": {"weight": torch.tensor([1.0])},
+            "rng_states": {"torch_cuda_rng": [torch.tensor([2], dtype=torch.uint8)]},
+        }
+    )
+    manager.wait_completion()
+
+    assert transfer_threads == [
+        ("detach", caller_thread),
+        ("cpu", caller_thread),
+        ("detach", caller_thread),
+        ("cpu", caller_thread),
+    ]
+    assert save_threads and save_threads[0] is not caller_thread
 
 
 def test_checksum_corruption_uses_verified_backup(tmp_path):

@@ -10,7 +10,7 @@ Hemos reorganizado la carpeta `data/` del proyecto para clasificar de manera óp
 *   **`data/raw_text/`**: Corpus originales de literatura en texto plano.
     *   `quijote.txt`, `becquer.txt`, `chilean_corpus.txt`, `tinyshakespeare.txt`
 *   **`data/raw_text/code_projects/`**: Datasets de código fuente real de tus proyectos `Mark-XXXIX-OR`, `Peak` y `proyec Anti`.
-*   **`data/tokenizers/`**: Todos los vocabularios y ficheros BPE generados (`tokenizer_final_8k.json`, etc.).
+*   **`data/tokenizers/`**: El único tokenizer BPE canónico de 16K (`tokenizer.json`).
 *   **`data/distillation/`**: Respuestas de destilación del profesor Qwen3.5-9B generadas a través de la API local de LM Studio (`distill_qwen9b_20260718_1803_clean.jsonl`).
 
 ---

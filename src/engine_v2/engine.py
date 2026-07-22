@@ -5,7 +5,7 @@ import sys
 import time
 import signal
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -23,6 +23,29 @@ from .amp import AMPContext
 from .ema import EMA
 from .health import HealthChecker
 from .loggers import ConsoleLogger, JSONLLogger, CSVLogger
+
+
+def get_cuda_memory_metrics_mb() -> Dict[str, float]:
+    """Return current and peak allocator memory in MB for CUDA or ROCm."""
+    if not torch.cuda.is_available():
+        allocated = reserved = peak_reserved = 0.0
+    else:
+        allocated = torch.cuda.memory_allocated() / 1e6
+        reserved = torch.cuda.memory_reserved() / 1e6
+        peak_reserved = torch.cuda.max_memory_reserved() / 1e6
+
+    return {
+        "vram_mb": allocated,
+        "vram_alloc_mb": allocated,
+        "vram_reserved_mb": reserved,
+        "vram_reserved_peak_mb": peak_reserved,
+    }
+
+
+def reset_cuda_peak_memory_stats() -> None:
+    """Reset peak allocator memory once before a CUDA or ROCm training run."""
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
 
 
 class TrainingEngineV2:
@@ -58,6 +81,12 @@ class TrainingEngineV2:
         self.max_norm = max_norm
         self.enable_hooks = enable_hooks
         self.enable_ema = enable_ema
+        self.max_recovery_attempts = max(
+            1, int(getattr(config, "max_recovery_attempts", 3))
+        )
+        self.recovery_lr_factor = float(getattr(config, "recovery_lr_factor", 0.5))
+        if not 0.0 < self.recovery_lr_factor <= 1.0:
+            raise ValueError("recovery_lr_factor must be in the interval (0, 1]")
 
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.experiment = experiment_manager or ExperimentManager()
@@ -76,8 +105,8 @@ class TrainingEngineV2:
         vocab_size = getattr(getattr(self.model, "config", None), "vocab_size", 8192)
         self.loss_pipeline = loss_pipeline or LossPipeline([
             CrossEntropyLossTerm(vocab_size=vocab_size),
-            RouterAuxLossTerm(weight=0.02),
-            RouterZLossTerm(weight=0.001),
+            RouterAuxLossTerm(weight=0.2),
+            RouterZLossTerm(weight=0.01),
         ])
 
         # 4. Multichannel Loggers
@@ -105,6 +134,10 @@ class TrainingEngineV2:
         self.should_stop = False
         self.current_step = 0
         self.global_tokens = 0
+        self._dataset_hash_cache: Optional[str] = None
+        self._tokenizer_hash_cache: Optional[str] = None
+        self._moe_aux_loss_ema: Optional[float] = None
+        self._moe_collapse_counters: Dict[str, int] = {}
         self.setup_signal_handlers()
 
         self.bus.publish(EngineEvent.ENGINE_INIT, engine=self)
@@ -149,14 +182,96 @@ class TrainingEngineV2:
             state = self.checkpoint_mgr.load_canonical()
         state = normalize_checkpoint_state(state, require_architecture=True)
         self._assert_config_compatible(state)
-        self.model.load_state_dict(state["model_state"])
+
+        model_state = state["model_state"]
+        current_state = self.model.state_dict()
+        compatible = {}
+        skipped = []
+        for key, param in current_state.items():
+            if key in model_state and model_state[key].shape == param.shape:
+                compatible[key] = model_state[key]
+            elif key in model_state:
+                skipped.append(
+                    f"  {key}: checkpoint {list(model_state[key].shape)} "
+                    f"vs model {list(param.shape)}"
+                )
+            else:
+                skipped.append(f"  {key}: not found in checkpoint")
+
+        missing, unexpected = self.model.load_state_dict(compatible, strict=False)
+
+        if skipped:
+            print(
+                f"[RESUME] Partial load — {len(compatible)} keys loaded, "
+                f"{len(skipped)} MoE keys skipped (shape mismatch):"
+            )
+            for entry in skipped:
+                print(entry)
+        if missing:
+            print(f"[RESUME] {len(missing)} keys missing from checkpoint (expected for re-initialized MoE):")
+            for key in missing:
+                print(f"  {key}")
+        if unexpected:
+            print(f"[RESUME] {len(unexpected)} unexpected keys in checkpoint (old MoE shapes):")
+            for key in unexpected:
+                print(f"  {key}")
+
         if "optimizer_state" in state:
-            self.optimizer.load_state_dict(state["optimizer_state"])
+            model_device = next(self.model.parameters()).device
+            try:
+                # Move checkpoint optimizer state to model device BEFORE load_state_dict
+                # so all tensors are on the correct device from the start.
+                ckpt_opt = state["optimizer_state"]
+                for param_state in ckpt_opt.get("state", {}).values():
+                    for key, value in param_state.items():
+                        if torch.is_tensor(value):
+                            param_state[key] = value.to(model_device, non_blocking=True)
+                self.optimizer.load_state_dict(ckpt_opt)
+            except ValueError as error:
+                if "different number of parameter groups" not in str(error):
+                    raise
+                print(
+                    "[RESUME] Skipped optimizer state because its parameter groups are incompatible; "
+                    "using a fresh optimizer state."
+                )
+            else:
+                skipped_optimizer_tensors = 0
+                reinitialized_params = set()
+                for parameter, parameter_state in list(self.optimizer.state.items()):
+                    for state_key, value in list(parameter_state.items()):
+                        if torch.is_tensor(value) and value.ndim and value.shape != parameter.shape:
+                            del parameter_state[state_key]
+                            skipped_optimizer_tensors += 1
+                            reinitialized_params.add(id(parameter))
+                # Wipe the entire state for params that lost ANY buffer — the
+                # optimizer's lazy init will create fresh ones on next step().
+                for parameter in list(self.optimizer.state.keys()):
+                    if id(parameter) in reinitialized_params:
+                        del self.optimizer.state[parameter]
+                if skipped_optimizer_tensors:
+                    print(
+                        f"[RESUME] Reinitialized {skipped_optimizer_tensors} optimizer state tensors "
+                        "with incompatible model shapes."
+                    )
         if "scheduler_state" in state:
             self.scheduler.load_state_dict(state["scheduler_state"])
 
-        if self.ema and "ema_state" in state:
-            self.ema.load_state_dict(state["ema_state"])
+        if self.ema and isinstance(state.get("ema_state"), dict):
+            saved_ema_state = dict(state["ema_state"])
+            saved_shadows = saved_ema_state.get("shadow", {})
+            compatible_shadows = {
+                key: value
+                for key, value in saved_shadows.items()
+                if key in self.ema.shadow and value.shape == self.ema.shadow[key].shape
+            }
+            skipped_ema_shadows = len(saved_shadows) - len(compatible_shadows)
+            saved_ema_state["shadow"] = {**self.ema.shadow, **compatible_shadows}
+            self.ema.load_state_dict(saved_ema_state)
+            if skipped_ema_shadows:
+                print(
+                    f"[RESUME] Reinitialized {skipped_ema_shadows} EMA shadows "
+                    "with incompatible model shapes."
+                )
 
         if "amp_scaler_state" in state:
             self.amp_context.load_state_dict(state["amp_scaler_state"])
@@ -181,7 +296,7 @@ class TrainingEngineV2:
         cur = getattr(self.model, "config", None)
         if cur is None:
             return
-        for key in ("vocab_size", "n_layers", "d_model", "num_experts", "num_shared_experts", "moe_top_k"):
+        for key in ("vocab_size", "n_layers", "d_model", "num_experts", "num_shared_experts"):
             if getattr(cur, key, None) != saved.get(key):
                 raise ValueError(
                     f"[RESUME] Architecture mismatch on '{key}': checkpoint={saved.get(key)} "
@@ -194,19 +309,29 @@ class TrainingEngineV2:
         self.fsm.transition_to(EngineState.SAVE)
         self.bus.publish(EngineEvent.CHECKPOINT_START)
         
-        # Calculate dataset and tokenizer hashes dynamically
-        data_hash = "unknown"
-        tok_hash = "unknown"
+        # Fingerprint the actual loader sources once per engine instance.
+        data_hash = self._dataset_hash_cache or "unknown"
+        tok_hash = self._tokenizer_hash_cache or "unknown"
         try:
-            data_dir = getattr(self.config, "data_dir", "data")
-            data_file = Path(data_dir) / "spanish_pretrain.txt"
-            if data_file.exists():
-                data_hash = self.checkpoint_mgr.calculate_sha256(data_file)
-            tok_file = Path(data_dir) / "tokenizers" / "tokenizer.json"
-            if not tok_file.exists():
-                tok_file = Path(data_dir) / "tokenizer.json"
-            if tok_file.exists():
-                tok_hash = self.checkpoint_mgr.calculate_sha256(tok_file)
+            if self._dataset_hash_cache is None:
+                dataset = getattr(self.train_loader, "dataset", None)
+                source_files = [
+                    Path(path) for path in getattr(dataset, "source_files", [])
+                    if Path(path).is_file()
+                ]
+                if source_files:
+                    self._dataset_hash_cache = self.checkpoint_mgr.calculate_manifest_sha256(
+                        source_files
+                    )
+                    data_hash = self._dataset_hash_cache
+            if self._tokenizer_hash_cache is None:
+                data_dir = Path(getattr(self.config, "data_dir", "data"))
+                tok_file = data_dir / "tokenizers" / "tokenizer.json"
+                if not tok_file.exists():
+                    tok_file = Path("data") / "tokenizers" / "tokenizer.json"
+                if tok_file.exists():
+                    self._tokenizer_hash_cache = self.checkpoint_mgr.calculate_sha256(tok_file)
+                    tok_hash = self._tokenizer_hash_cache
         except Exception:
             pass
 
@@ -230,10 +355,66 @@ class TrainingEngineV2:
         self.bus.publish(EngineEvent.CHECKPOINT_COMPLETE, file="checkpoint.pt")
         self.fsm.transition_to(EngineState.TRAIN)
 
+    def _data_iterator_at_step(self, step: int) -> Iterator[Any]:
+        """Build an iterator positioned at the batch represented by ``step``."""
+        data_iter = iter(self.train_loader)
+        try:
+            loader_length = len(self.train_loader)
+        except TypeError:
+            loader_length = 0
+
+        batches_to_skip = step % loader_length if loader_length else 0
+        for _ in range(batches_to_skip):
+            try:
+                next(data_iter)
+            except StopIteration:
+                data_iter = iter(self.train_loader)
+                next(data_iter)
+        return data_iter
+
+    def _scale_recovery_lr(self, factor: float) -> None:
+        """Scale optimizer LR and scheduler anchors after checkpoint restore."""
+        for param_group in self.optimizer.param_groups:
+            param_group["lr"] *= factor
+            if "initial_lr" in param_group:
+                param_group["initial_lr"] *= factor
+
+        if hasattr(self.scheduler, "base_lrs"):
+            self.scheduler.base_lrs = [lr * factor for lr in self.scheduler.base_lrs]
+        if hasattr(self.scheduler, "_last_lr"):
+            self.scheduler._last_lr = [
+                param_group["lr"] for param_group in self.optimizer.param_groups
+            ]
+
+    def _recover_from_checkpoint(
+        self, recovery_attempt: int
+    ) -> Tuple[int, int, Iterator[Any]]:
+        """Restore a clean checkpoint and return coherent execution counters."""
+        self.fsm.transition_to(EngineState.RECOVERING)
+        self.checkpoint_mgr.wait_completion()
+        print("[RECOVERY ROLLBACK] Restoring last clean canonical checkpoint...")
+        try:
+            restored_step = self.resume()
+        except Exception as error:
+            self.optimizer.zero_grad(set_to_none=True)
+            self.fsm.transition_to(EngineState.ERROR)
+            raise RuntimeError("Recovery checkpoint could not be restored") from error
+
+        # The checkpoint owns optimizer and scheduler state. Apply the retry
+        # reduction only after both have been restored, and keep their anchors aligned.
+        self._scale_recovery_lr(self.recovery_lr_factor ** recovery_attempt)
+        self.optimizer.zero_grad(set_to_none=True)
+        self.model.train()
+        data_iter = self._data_iterator_at_step(restored_step)
+        self.fsm.transition_to(EngineState.TRAIN)
+        return restored_step, self.global_tokens, data_iter
+
     def fit(self, max_steps: int) -> Dict[str, Any]:
         """Run FSM training cycle with automatic recovery on NaN/Inf."""
         self.fsm.transition_to(EngineState.LOAD)
         self.model.to(self.device)
+        if self.device.type == "cuda":
+            reset_cuda_peak_memory_stats()
         
         # Save baseline checkpoint at start of fit for safe recovery rollback
         if not self.checkpoint_mgr.canonical_path.exists():
@@ -244,17 +425,22 @@ class TrainingEngineV2:
         self.bus.publish(EngineEvent.TRAIN_START)
 
         self.model.train()
-        data_iter = iter(self.train_loader)
+        data_iter = self._data_iterator_at_step(self.current_step)
         batch_size = self.train_loader.batch_size or 4
         global_tokens = self.global_tokens
         step_loss = 0.0
         start_time = time.time()
+        step = self.current_step
+        recovery_attempts = 0
 
-        for step in range(self.current_step, max_steps):
+        while step < max_steps:
             if self.should_stop:
                 print(f"[GRACEFUL SHUTDOWN] Stopping at step {step}")
                 self.current_step = step
                 break
+
+            self.bus.publish(EngineEvent.STEP_START, step=step)
+            self.profiler.start("dataloader")
 
             self.bus.publish(EngineEvent.STEP_START, step=step)
             self.profiler.start("dataloader")
@@ -265,17 +451,42 @@ class TrainingEngineV2:
                 x, y = next(data_iter)
             self.profiler.stop("dataloader")
 
-            x, y = x.to(self.device), y.to(self.device)
+            x = x.to(self.device, non_blocking=True)
+            y = y.to(self.device, non_blocking=True)
             seq_len = x.size(1)
 
             # Forward pass under AMP
             self.profiler.start("forward")
+            if hasattr(self.model, "set_moe_step"):
+                self.model.set_moe_step(step)
             with self.amp_context.autocast():
                 logits = self.model(x)
                 loss = self.loss_pipeline(logits, y, model=self.model) / self.gradient_accumulation_steps
             self.profiler.stop("forward")
 
-            step_loss = loss.item() * self.gradient_accumulation_steps
+            step_loss = loss.detach().item() * self.gradient_accumulation_steps
+
+            # ── Loss Health Check ─────────────────────────────────────
+            loss_healthy, loss_reason = self.health_checker.check_loss(step_loss)
+            if not loss_healthy:
+                print(f"[RECOVERY TRIGGERED] {loss_reason} at step {step+1}")
+                self.bus.publish(EngineEvent.LOSS_NAN, reason=loss_reason)
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                self.optimizer.zero_grad(set_to_none=True)
+                recovery_attempts += 1
+                if recovery_attempts >= self.max_recovery_attempts:
+                    self.checkpoint_mgr.wait_completion()
+                    self.fsm.transition_to(EngineState.ERROR)
+                    raise RuntimeError(
+                        "Training recovery exhausted after "
+                        f"{recovery_attempts} consecutive loss-NaN checks "
+                        f"at step {step + 1}: {loss_reason}"
+                    )
+                step, global_tokens, data_iter = self._recover_from_checkpoint(
+                    recovery_attempts
+                )
+                continue
 
             # Backward pass under AMP
             self.profiler.start("backward")
@@ -284,7 +495,6 @@ class TrainingEngineV2:
             self.bus.publish(EngineEvent.AFTER_BACKWARD)
             self.profiler.stop("backward")
 
-            # Gradient Monitoring & Health Checks
             if (step + 1) % self.gradient_accumulation_steps == 0:
                 self.amp_context.unscale_(self.optimizer)
                 grad_stats = self.health_checker.monitor_gradients()
@@ -296,16 +506,32 @@ class TrainingEngineV2:
                     self.bus.publish(EngineEvent.LOSS_NAN, reason=reason)
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
-                    if self.checkpoint_mgr.canonical_path.exists():
-                        print("[RECOVERY ROLLBACK] Restoring last clean canonical checkpoint...")
-                        self.resume()
-                    for param_group in self.optimizer.param_groups:
-                        param_group["lr"] *= 0.5
-                    self.optimizer.zero_grad(set_to_none=True)
+                    recovery_attempts += 1
+                    if recovery_attempts >= self.max_recovery_attempts:
+                        self.checkpoint_mgr.wait_completion()
+                        self.optimizer.zero_grad(set_to_none=True)
+                        self.fsm.transition_to(EngineState.ERROR)
+                        raise RuntimeError(
+                            "Training recovery exhausted after "
+                            f"{recovery_attempts} consecutive health-check failures "
+                            f"at step {step + 1}: {reason}"
+                        )
+                    step, global_tokens, data_iter = self._recover_from_checkpoint(
+                        recovery_attempts
+                    )
                     continue
+
+                recovery_attempts = 0
 
                 self.profiler.start("optimizer")
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_norm)
+                # Safety net: ensure optimizer state is on model device before step.
+                # This catches any edge case where resume's device fix didn't apply.
+                model_device = next(self.model.parameters()).device
+                for state_data in self.optimizer.state.values():
+                    for k, v in list(state_data.items()):
+                        if torch.is_tensor(v) and v.device != model_device:
+                            state_data[k] = v.to(model_device, non_blocking=True)
                 self.amp_context.step(self.optimizer)
                 self.amp_context.update()
                 self.scheduler.step()
@@ -321,16 +547,17 @@ class TrainingEngineV2:
             self.global_tokens = global_tokens
             elapsed_time = time.time() - start_time
             tok_s = int(global_tokens / max(elapsed_time, 1e-6))
-            vram_mb = torch.cuda.memory_allocated() / 1e6 if torch.cuda.is_available() else 0.0
             current_lr = self.scheduler.get_last_lr()[0]
 
             log_data = {
                 "loss": step_loss,
                 "lr": current_lr,
                 "tok_s": tok_s,
-                "vram_mb": vram_mb,
+                **get_cuda_memory_metrics_mb(),
                 **self.loss_pipeline.last_breakdown,
             }
+
+            self._log_moe_metrics(step + 1, log_data)
 
             self.console_logger.log(step, log_data)
             self.jsonl_logger.log(step, log_data)
@@ -353,6 +580,8 @@ class TrainingEngineV2:
             if (save_interval > 0 and (step + 1) % save_interval == 0) or self.should_stop:
                 self.save_checkpoint(step=self.current_step, global_tokens=global_tokens)
 
+            step = self.current_step
+
         # Ensure canonical checkpoint is saved at end of fit()
         self.save_checkpoint(step=self.current_step, global_tokens=global_tokens)
         self.checkpoint_mgr.wait_completion()
@@ -364,6 +593,49 @@ class TrainingEngineV2:
         summary = {"final_step": self.current_step, "final_loss": step_loss, "total_tokens": global_tokens}
         self.experiment.save_summary(summary)
         return summary
+
+    def _log_moe_metrics(self, step: int, log_data: Dict[str, Any]) -> None:
+        """Log MoE metrics and track configured auxiliary-loss EMA."""
+        if not hasattr(self.model, "get_moe_metrics"):
+            return
+        if self.config is not None and not getattr(self.config, "log_moe_metrics", True):
+            return
+        log_interval = max(1, int(getattr(self.config, "log_interval", 10)))
+        if step % log_interval != 0:
+            return
+
+        metrics = self.model.get_moe_metrics()
+        if not metrics:
+            return
+
+        from src.training.moe_metrics import ConsoleLogger as MoeConsoleLogger
+        from src.training.moe_metrics import aux_loss_ema, detect_router_collapse
+
+        MoeConsoleLogger().log(metrics, step)
+        current_aux = float(self.model.get_aux_loss().detach().item())
+        previous_aux = self._moe_aux_loss_ema
+        if previous_aux is None:
+            previous_aux = current_aux
+        self._moe_aux_loss_ema = aux_loss_ema(current_aux, previous_aux)
+        self.metrics.update("moe_aux_loss_ema", self._moe_aux_loss_ema)
+        log_data["moe_aux_loss_ema"] = self._moe_aux_loss_ema
+
+        threshold = int(getattr(self.config, "moe_collapse_consecutive_steps", 50))
+        expert_ratio = float(getattr(self.config, "moe_collapse_expert_ratio", 0.3))
+        if threshold <= 0:
+            return
+        for key, histogram in metrics.items():
+            if not key.endswith("/histogram"):
+                continue
+            counter = self._moe_collapse_counters.get(key, 0)
+            stop, counter = detect_router_collapse(
+                histogram, counter, threshold, expert_ratio=expert_ratio
+            )
+            self._moe_collapse_counters[key] = counter
+            if stop:
+                self.should_stop = True
+                print(f"Router collapse detected in {key} at step {step}. Stopping training.", flush=True)
+                break
 
     def _validate_with_ema(self) -> float:
         """Run validation using EMA weights, then restore original model weights."""

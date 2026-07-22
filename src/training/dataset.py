@@ -17,7 +17,7 @@ from src.training.config import TrainingConfig
 class TinyShakespeareDataset:
     """Sliding-window dataset over the TinyShakespeare corpus.
 
-    Loads the BPE tokenizer from ``data_dir/tokenizer.json``, tokenizes
+    Loads the canonical BPE tokenizer from ``data/tokenizers/tokenizer.json``, tokenizes
     ``data_dir/tinyshakespeare.txt`` once at init, and provides overlapping
     ``(input, target)`` pairs of length ``seq_len`` for autoregressive
     language model training.
@@ -36,11 +36,9 @@ class TinyShakespeareDataset:
         self.seq_len = config.seq_len
         data_dir = config.data_dir
 
-        # Load trained BPE tokenizer (check subfolder first, fallback to root)
+        # All datasets use the single canonical 16K tokenizer.
         tokenizer = Tokenizer()
-        tokenizer_path = os.path.join(data_dir, "tokenizers", "tokenizer.json")
-        if not os.path.exists(tokenizer_path):
-            tokenizer_path = os.path.join(data_dir, "tokenizer.json")
+        tokenizer_path = os.path.join("data", "tokenizers", "tokenizer.json")
         tokenizer.load(tokenizer_path)
 
         # Tokenize the full corpus once at init (check subfolder first, fallback to root)
@@ -57,6 +55,7 @@ class TinyShakespeareDataset:
                 break
         if text_path is None:
             raise FileNotFoundError(f"No training text corpus found in {data_dir}")
+        self.source_files = [text_path]
 
         with open(text_path, "r", encoding="utf-8") as f:
             text = f.read()
@@ -97,14 +96,14 @@ class BinaryCorpusDataset:
     directory, concatenates the token IDs, and exposes the same ``(input,
     target)`` sliding-window interface as TinyShakespeareDataset.
 
-    This is what trains M0.1 on the real ~10M-token corpus
-    (corpus1_es_wiki_wikisource_tech_10M) instead of the small raw-text files.
+    ``corpus_dir`` is REQUIRED — there is no default. Pass the explicit path
+    to the corpus shards (e.g. ``data/corpus/corpus2_es_wiki_gutenberg_17M``).
+    Use ``build_training_dataset()`` in ``train.py`` for the standard resolution
+    (checks the default path, falls back to TinyShakespeareDataset).
     """
 
-    def __init__(self, config: TrainingConfig, corpus_dir: str | None = None) -> None:
+    def __init__(self, config: TrainingConfig, corpus_dir: str) -> None:
         self.seq_len = config.seq_len
-        if corpus_dir is None:
-            corpus_dir = os.path.join(config.data_dir, "corpus", "corpus1_es_wiki_wikisource_tech_10M")
         self.corpus_dir = corpus_dir
 
         shard_files = sorted(
@@ -113,6 +112,7 @@ class BinaryCorpusDataset:
         )
         if not shard_files:
             raise FileNotFoundError(f"No shard_*.bin found in {corpus_dir}")
+        self.source_files = [os.path.join(corpus_dir, fname) for fname in shard_files]
 
         chunks = []
         for fname in shard_files:
@@ -121,22 +121,27 @@ class BinaryCorpusDataset:
             if not raw or len(raw) % 2:
                 raise ValueError(f"Invalid binary shard {fname}: expected non-empty uint16 data")
             # uint16 big-endian per build_info.txt (vocab 16384 fits in uint16)
-            chunks.append(np.frombuffer(raw, dtype=">u2"))
-        tokens_np = np.concatenate(chunks).astype(np.int64)
-        if np.any(tokens_np < 0) or np.any(tokens_np >= 65536):
-            raise ValueError(f"Invalid token ID in canonical corpus {corpus_dir}")
-        self.tokens: LongTensor = torch.from_numpy(tokens_np)
 
-        if len(self.tokens) < self.seq_len:
-            raise ValueError(
-                f"Corpus length ({len(self.tokens)}) is shorter than sequence "
-                f"length ({self.seq_len}). Reduce seq_len or use a larger corpus."
-            )
+        mm_chunks = []
+        for path in self.source_files:
+            file_bytes = os.path.getsize(path)
+            num_tokens = file_bytes // 2
+            if num_tokens > 0:
+                mm = np.memmap(path, dtype=">u2", mode="r", shape=(num_tokens,))
+                mm_chunks.append(mm)
+
+        if not mm_chunks:
+            raise ValueError(f"All shard files in {corpus_dir} were empty.")
+
+        self.tokens_np = np.concatenate(mm_chunks)
+        self.total_tokens = len(self.tokens_np)
 
     def __len__(self) -> int:
-        return max(0, len(self.tokens) - self.seq_len)
+        return max(0, self.total_tokens - self.seq_len)
 
-    def __getitem__(self, idx: int):
-        input_ids = self.tokens[idx: idx + self.seq_len]
-        target_ids = self.tokens[idx + 1: idx + self.seq_len + 1]
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        # Extraer el trozo de uint16 y convertir solo la ventana activa a int64
+        chunk = self.tokens_np[idx : idx + self.seq_len + 1].astype(np.int64)
+        input_ids = torch.from_numpy(chunk[:-1])
+        target_ids = torch.from_numpy(chunk[1:])
         return input_ids, target_ids

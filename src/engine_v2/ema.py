@@ -22,14 +22,14 @@ class EMA:
                 self.shadow[name] = param.data.clone().detach()
 
     def update(self) -> None:
-        """Update shadow parameters with current model weights."""
+        """Update shadow parameters with current model weights using in-place lerp."""
         for name, param in self.model.named_parameters():
             if param.requires_grad:
                 if name not in self.shadow or self.shadow[name].device != param.device:
                     self.shadow[name] = param.data.clone().detach()
                 else:
-                    new_average = (1.0 - self.decay) * param.data + self.decay * self.shadow[name]
-                    self.shadow[name] = new_average.clone().detach()
+                    # In-place EMA: shadow = shadow + (1-decay) * (param - shadow)
+                    self.shadow[name].lerp_(param.data, 1.0 - self.decay)
 
     def apply_shadow(self) -> None:
         """Replace model weights with shadow parameters (saving backup)."""
