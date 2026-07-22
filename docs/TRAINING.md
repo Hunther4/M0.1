@@ -116,7 +116,7 @@ Valid short smoke-tests must avoid this:
 
 These are wired into the code (not just docs):
 
-- **Corpus loader** — `BinaryCorpusDataset` auto-loads `data/corpus/corpus1_es_wiki_wikisource_tech_10M` (uint16 big-endian shards, ~9.99M tokens) when present; falls back to the raw-text loader otherwise. No more training on the wrong corpus.
+- **Corpus loader** — `BinaryCorpusDataset` requires an explicit `corpus_dir` path (no default). The entry point defaults to `data/corpus/corpus2_es_wiki_gutenberg_17M`; override with `--corpus-dir path`.
 - **Mixed precision = bfloat16** — AMP autocast uses `torch.bfloat16` on ROCm (numerically safer than fp16) and drops `GradScaler`. (`src/engine_v2/amp.py`)
 - **z-loss single source** — `RouterZLossTerm` owns z-loss; the MoE aux term no longer double-counts it.
 - **Gradient accumulation** — already wired (`--grad-accum-steps`); loss is scaled and the optimizer steps every N micro-batches.
