@@ -1,399 +1,61 @@
 # M0.1
 
-Decoder-only transformer language model from scratch in PyTorch. Research-grade implementation featuring Multi-head Latent Attention (MLA), Mixture of Experts (MoE) with shared + routed experts, SwiGLU activations, Rotary Position Embeddings (RoPE), weight-tied embeddings, and an enterprise-grade training framework with automatic recovery, EMA, and AMP.
+Decoder-only transformer language model from scratch in PyTorch. ~99.7M params, trained on Spanish corpora.
 
 ![PyTorch](https://img.shields.io/badge/PyTorch-EE4C2C?style=flat-square&logo=pytorch&logoColor=white)
-![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3.11-3776AB?style=flat-square&logo=python&logoColor=white)
 ![Research](https://img.shields.io/badge/purpose-research-BF4FE0?style=flat-square)
-![Architecture](https://img.shields.io/badge/architecture-MLA%20%7C%20MoE%20%7C%20SwiGLU%20%7C%20RoPE-00BFFF?style=flat-square)
-![Parameters](https://img.shields.io/badge/params-110M%E2%80%93180M-9cf?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-yellow?style=flat-square)
-
----
-
-## Overview
-
-M0.1 is a **from-scratch decoder-only transformer language model** built for research and experimentation with modern architecture techniques. Rather than wrapping existing libraries, every component -- from the attention mechanism to the training loop -- is implemented directly in PyTorch, providing full visibility and control for research purposes.
-
-The project currently operates with 4 routed experts, 1 shared expert, and top-2 routing, trained on custom Spanish text corpora using a trained BPE tokenizer.
-
-The architecture incorporates techniques from state-of-the-art models:
-- **Multi-head Latent Attention (MLA)** from DeepSeek-V2/V3, reducing KV cache footprint by compressing key-value states into a low-rank latent space.
-- **Mixture of Experts (MoE)** with DeepSeek-style shared + routed experts and fine-grained expert scaling.
-- **SwiGLU** activation function for the feedforward networks.
-- **Weight-tied embeddings**, sharing the weight matrix between input embedding and output projection.
-- **Rotary Position Embeddings (RoPE)** for relative position encoding.
-- **RMSNorm** for pre-normalization in every transformer block.
 
 ---
 
 ## Architecture
 
-### Model Configuration
-
-| Parameter | Value | Description |
-|-----------|-------|-------------|
-| `vocab_size` | 16,384 | Vocabulary size (BPE tokenizer) |
-| `context_length` | 8,192 | Maximum sequence length |
-| `d_model` | 640 | Embedding / hidden dimension |
-| `n_heads` | 10 | Number of attention heads |
-| `d_head` | 64 | Dimension per attention head |
-| `d_ff` | 1,728 | Dense feedforward hidden dimension |
-| `n_layers` | 12 | Total transformer layers (2 dense + 10 MoE) |
-| `rope_theta` | 10,000.0 | RoPE base frequency |
-
-The model consists of 12 transformer layers: the first 2 are dense feedforward layers, and the remaining 10 use Mixture of Experts. Each layer uses pre-norm (RMSNorm) with residual connections around both the attention and feedforward sublayers.
-
-### Multi-head Latent Attention (MLA)
-
-Standard multi-head attention (MHA) stores separate key and value projections for every head, resulting in a KV cache of size `2 * n_heads * d_head = 2 * d_model` per token. MLA compresses the key-value states into a low-rank latent space, dramatically reducing cache memory.
-
-**How MLA works:**
-
-1. The query is split into two parts: a "content" component (no RoPE) and a "position" component (with RoPE):
-   - `W_q`: projects to `n_heads * d_head_no_rope` (content query)
-   - `W_qr`: projects to `n_heads * d_head_rope` (position query with RoPE)
-
-2. Key-value states are compressed through a down-projection:
-   - `W_kv_down`: compresses from `d_model` to `mla_kv_c_dim` (128)
-   - The latent KV is normalized via `RMSNorm` before up-projection
-
-3. The compressed latent is up-projected to reconstruct:
-   - `W_k_up`: up-projects to `n_heads * d_head_no_rope` (content key)
-   - `W_v_up`: up-projects to `n_heads * d_head` (full value)
-
-4. A separate projection handles the RoPE portion of the key:
-   - `W_kr`: projects to `n_heads * d_head_rope` (position key with RoPE)
-
-**KV cache reduction:**
-
-| Mechanism | Cache per token | MLA saving |
-|-----------|----------------|------------|
-| Standard MHA | `2 * d_model = 1,280` floats | -- |
-| MLA | `mla_kv_c_dim + n_heads * d_head_rope = 128 + 160 = 288` floats | **77% reduction** |
-
-The content portion of K and V is reconstructed on the fly from the compressed latent during attention computation. Only the compressed latent (128 floats) plus the RoPE key projection (160 floats = 10 heads * 16 dim) needs to be cached per token.
-
-**Configuration details:**
-
-| Parameter | Value | Description |
-|-----------|-------|-------------|
-| `d_head` | 64 | Total head dimension |
-| `d_head_rope` | 16 | RoPE dimension per head (clamped to even < d_head) |
-| `d_head_no_rope` | 48 | Content dimension per head |
-| `mla_kv_c_dim` | 128 | KV compression latent dimension |
-
-**Fallback modes:** The attention module also supports standard MHA (`use_mla=False`) and Hybrid Attention (`use_hybrid_attention=True`) with Compressed Sparse Attention (CSA) and Heavily Compressed Attention (HCA), allowing comparative experimentation.
-
-### Mixture of Experts (MoE)
-
-The MoE implementation follows DeepSeek's architecture with two types of experts:
-
-- **Shared experts**: Always active for every token. They capture general, commonly-needed knowledge.
-- **Routed experts**: Dynamically selected per token via a learned gate. They specialize in different domains or patterns.
-
-The output of an MoE layer is:
-
-```
-output = shared_experts(x) + sum_{i in top-k} g_i(x) * expert_i(x)
-```
-
-where `g_i(x)` is the gate probability for expert `i` (re-normalized among the top-k).
-
-**Gate mechanism:**
-- A linear projection maps the hidden state to `num_experts` logits.
-- Softmax produces a probability distribution over experts.
-- Top-k experts are selected by probability.
-- Selected expert outputs are weighted by their (re-normalized) probabilities.
-
-**Auxiliary losses:**
-- **Load balancing loss**: `num_experts * sum(f * P)` where `f` is the fraction of tokens assigned to each expert and `P` is the average gate probability. This encourages uniform routing.
-- **Router Z-loss**: `0.001 * mean(logsumexp(gate_logits)^2)` penalizes large gate logits, preventing routing collapse without compromising model quality.
-
-
-### SwiGLU FeedForward
-
-The feedforward network uses the SwiGLU activation function, which has been shown to outperform ReLU and GELU in transformer language models:
-
-```
-SwiGLU(x) = SiLU(gate_proj(x)) * up_proj(x)
-output = down_proj(SwiGLU(x))
-```
-
-where `SiLU(x) = x * sigmoid(x)`. Each feedforward sublayer has three weight matrices:
-- `gate_proj`: `d_model -> d_ff`
-- `up_proj`: `d_model -> d_ff`
-- `down_proj`: `d_ff -> d_model`
-
-This is applied consistently in both dense layers, shared experts, and routed experts.
-
-### Weight-Tied Embeddings
-
-The embedding matrix is shared between the input embedding layer and the output projection head:
-
-- Input: `Embedding(vocab_size, d_model)` maps token IDs to dense vectors.
-- Output: A linear projection using `embedding.weight` (transposed) maps hidden states to vocabulary logits.
-
-This saves approximately 10.5 million parameters (`vocab_size * d_model = 16,384 * 640 = 10.5M`) and provides a single gradient signal through the embedding matrix, which acts as a regularizer and often improves convergence.
-
-### Rotary Position Embeddings (RoPE)
-
-Rotary Position Embeddings encode positional information by rotating pairs of dimensions in the query and key representations:
-
-```
-rotated_even = x_even * cos(m*theta_i) - x_odd * sin(m*theta_i)
-rotated_odd  = x_even * sin(m*theta_i) + x_odd * cos(m*theta_i)
-```
-
-where `theta_i = 1 / rope_theta^(2i/d_head)` and `m` is the position index. RoPE is applied to the position-specific portion of queries and keys (in MLA, this is the `d_head_rope = 16` dimension per head). The computation is done in FP32 for numerical stability, then cast back to the input dtype.
-
-The implementation supports arbitrary position offsets for cached autoregressive generation, where precomputed sin/cos values are indexed by the current cache length.
-
-### RMSNorm
-
-Root Mean Square Normalization normalizes the input by its root mean square, then scales by a learnable parameter:
-
-```
-RMSNorm(x) = (x / sqrt(mean(x^2) + eps)) * gamma
-```
-
-The normalization is computed in FP32 to avoid overflow in FP16/BF16, then both the normalized activation and `gamma` are cast to the activation dtype for the final multiply. This prevents an FP32 parameter from silently promoting mixed-precision activations. RMSNorm is applied as pre-norm before both the attention and feedforward sublayers in every transformer block.
-
-### Router Z-Loss
-
-The DeepSeek-style Router Z-Loss is an auxiliary loss that penalizes large gate logits to prevent routing collapse:
-
-```
-z_loss = 0.001 * mean(logsumexp(gate_logits, dim=-1)^2)
-```
-
-This loss:
-- Promotes balanced logit magnitudes across experts.
-- Prevents the router from becoming deterministic too early.
-- Is applied additively to the total loss and does not interfere with the primary language modeling objective.
-
-In the V2 training framework, the Z-loss is separated from the load balancing loss via the `RouterZLossTerm` in the composable `LossPipeline`.
-
----
+| Component | Detail |
+|-----------|--------|
+| Layers | 12 (2 dense FF + 10 MoE) |
+| d_model | 640, 10 heads, d_head=64 |
+| Attention | Multi-head Latent Attention (MLA) — KV cache compressed via low-rank latent (128 dim) + RoPE (16 dim/head). 77% less cache than MHA. |
+| MoE | 4 routed + 1 shared expert, top-2 routing, DeepSeek-style load balancing + Z-loss |
+| FF | SwiGLU (gate/up/down projections) |
+| Position | Rotary Position Embeddings (RoPE) |
+| Norm | RMSNorm pre-norm |
+| Tie | Weight-tied embeddings (shared input/output matrix) |
+| Vocab | 16,384 BPE tokenizer |
 
 ## Training System
 
-### TrainingEngineV2 (Enterprise Framework)
+Entry point: `python -m src.training.train [--corpus-dir path]`
 
-The primary training orchestration (``src.training.train``) is built on a **Finite State Machine (FSM)** with clearly defined states:
+**TrainingEngineV2** — FSM-based engine with:
+- Finite State Machine (`INIT → LOAD → TRAIN → VALIDATE → SAVE → EVALUATE → EXPORT → FINISHED`, plus `RECOVERING`/`ERROR`)
+- EventBus for decoupled plugin communication
+- LossPipeline with composable terms (CE, aux loss, Z-loss)
+- AsyncCheckpointManagerV2 with background save + SHA256 integrity
+- HealthChecker (NaN/Inf detection, auto rollback + LR halve)
+- EMA shadow weights, AMP (FP16/BF16), gradient accumulation
+- ExperimentManager with structured run directories (`runs/run_XXXX/`)
 
-```
-INIT -> LOAD -> TRAIN -> VALIDATE -> SAVE -> EVALUATE -> EXPORT -> FINISHED
-```
+## Data
 
-**Key components:**
+Binary shard corpora under `data/corpus/` (uint16 BE, built with `src/data/prep.py`):
 
-- **StateMachine**: Defines valid transitions, preventing illegal state changes and providing a verifiable lifecycle for the training process.
-- **EventBus**: Decoupled publish/subscribe communication. Plugins register for events (`STEP_START`, `BEFORE_BACKWARD`, `STEP_END`, etc.) without tight coupling to the engine.
-- **LossPipeline**: Composable loss manager supporting multiple weighted loss terms. The default pipeline uses `CrossEntropyLossTerm` (language modeling), `RouterAuxLossTerm` (load balancing), and `RouterZLossTerm` (Z-loss regularization).
-- **GranularProfiler**: Per-component timing for forward pass, backward pass, optimizer step, and data loading, exported as structured JSON.
-- **AsyncCheckpointManagerV2**: Background checkpoint saving with environment metadata capture, RNG state preservation, and atomic save semantics.
-- **HealthChecker**: Monitors gradients for NaN/Inf, triggers automatic recovery by rolling back to the last clean checkpoint and halving the learning rate.
+| Corpus | Tokens | Sources |
+|--------|--------|---------|
+| corpus1 | ~10M | Wikipedia ES, Wikisource, tech texts |
+| corpus2 | ~16.6M | Wikipedia ES, Gutenberg (zero overlap) |
 
-The V2 engine supports:
-- Automatic recovery on NaN/Inf loss with LR rollback.
-- Graceful shutdown on SIGINT/SIGTERM with canonical checkpoint save.
-- Loss breakdown tracking per step (logged to JSONL and CSV).
-- Environment metadata capture (hardware, OS, Python, PyTorch version, command line, CPU cores, RAM).
-
-### Simplified Callback System (V1 Engine — Legacy)
-
-> **Status:** V1 is preserved for backward compatibility with scripts under ``scripts/training/``.
-> The main entry point (``src.training.train``) uses the V2 engine above.
-
-The original training engine (`TrainingEngine`) exposes a minimal callback interface with only 3 hooks:
-
-| Hook | When it fires | Purpose |
-|------|---------------|---------|
-| `on_step_end` | After each optimizer step | Logging, metric computation, early stopping checks |
-| `on_validation` | After validation completes | Post-validation logging or adjustments |
-| `on_save` | After checkpoint save | Post-save notifications or remote syncs |
-
-Built-in callbacks:
-- **LoggerCallback**: Console logging every `log_interval` steps with loss, LR, perplexity, gradient norm, throughput, VRAM, and MoE metrics.
-- **MoEMonitorCallback**: Computes MoE routing metrics (entropy, Gini, dead experts) and detects router collapse. Stops training if collapse persists for 50+ consecutive steps.
-- **EarlyStopCallback**: Stops training when loss becomes NaN or Inf.
-- **CheckpointCallback**: Saves checkpoints at configurable intervals with RNG state capture.
-- **JSONLLoggerCallback**: Writes step-level metrics to `runs/run_XXXX/metrics.jsonl`.
-
-### Exponential Moving Average (EMA)
-
-EMA maintains shadow weights using Polyak averaging:
-
-```
-shadow = decay * shadow + (1 - decay) * model_param
-```
-
-Key features:
-- Shadow weights are updated after every optimizer step.
-- **Validation uses EMA weights**: `apply_shadow()` swaps model weights to EMA values before validation, and `restore()` reverts them afterward. This produces lower validation loss and better perplexity in practice.
-- EMA state is included in checkpoints, ensuring continuity across training resumptions.
-- The update is skipped if shadow weights are currently in-place (applied to the model), preventing double-accumulation.
-
-### Automatic Mixed Precision (AMP)
-
-The `AMPContext` provides a unified precision context wrapper:
-
-- Supports both FP16 and BF16 precision.
-- Uses `torch.amp.autocast` and `torch.amp.GradScaler` for gradient scaling.
-- Default to FP16 (`float16`), configurable to BF16 (`bfloat16`).
-- Enabled automatically when CUDA is available.
-- Exposes the current scaler scale for logging.
-
-### Gradient Accumulation
-
-Gradient accumulation allows effective batch sizes larger than what fits in GPU memory:
-
-```
-effective_batch = batch_size * gradient_accumulation_steps
-```
-
-The loss is divided by `gradient_accumulation_steps` before backpropagation, and the optimizer step (gradient clipping, scaler step, scheduler step, EMA update) only occurs on accumulation boundaries.
-
-### Validation Pipeline
-
-- Runs at configurable intervals (default: every 500 steps).
-- Uses EMA weights when EMA is enabled, then restores original weights.
-- Computes cross-entropy loss and perplexity on a held-out split of the dataset.
-- Tracks the best validation loss seen during training.
-- Limited to 30-50 validation steps to avoid excessive overhead.
-
-### MoE Monitoring
-
-The `MoEMonitorCallback` (V1) and `MetricRegistry` with forward hooks (V2) provide real-time monitoring of MoE behavior with 20+ metrics across 4 categories:
-
-#### Distribution Metrics
-
-| Metric | Description | Formula |
-|--------|-------------|---------|
-| `expert_usage_histogram` | Token count per routed expert | `bincount(topk_indices)` |
-| `gini_coefficient` | Token distribution inequality (0=perfect, 1=monopoly) | `(2 * sum(i * x_i)) / (n * sum(x_i)) - (n+1)/n` |
-| `imbalance_ratio` | Ratio of max to min expert usage | `max(hist) / max(min(hist>0), 1)` |
-| `expert_utilization_pct` | Utilization percentage relative to capacity | `hist / capacity` |
-
-#### Router Metrics
-
-| Metric | Description | Formula |
-|--------|-------------|---------|
-| `entropy` | Mean per-token normalized entropy | `H(p) / log(n_experts)` |
-| `confidence` | Mean max gate probability | `mean(max(softmax(logits)))` |
-| `gate_logits_std` | Standard deviation of raw gate logits | `std(gate_logits)` |
-| `gate_logits_mean` | Mean of raw gate logits | `mean(gate_logits)` |
-| `top1_frequency` | Fraction of tokens where expert is top-1 choice | `bincount(top1) / N_tokens` |
-| `top2_frequency` | Fraction of tokens where expert appears in top-2 | `bincount(top2_flat) / N_tokens` |
-
-#### Health Metrics
-
-| Metric | Description | Formula |
-|--------|-------------|---------|
-| `dead_expert_streak` | Consecutive steps with zero-token experts | `counter increment on (hist == 0).any()` |
-| `expert_saturation` | How close each expert is to theoretical capacity | `hist / (tokens / experts * top_k)` |
-| `aux_loss_ema` | Exponential moving average of auxiliary loss | `decay * prev_ema + (1-decay) * current` |
-
-#### Quality Metrics
-
-| Metric | Description | Formula |
-|--------|-------------|---------|
-| `expert_kl_divergence` | KL divergence of mean gate distribution from uniform | `sum(p * log(p / uniform))` |
-| `shared_expert_usage` | Shared expert activity (always active) | Static: always `True` with count |
-
-#### Detection Mechanisms
-
-| Detection | Trigger | Action |
-|-----------|---------|--------|
-| Router collapse | All experts dead across all MoE layers | `should_stop = True` after 50 consecutive steps |
-| NaN loss | Loss is NaN or Inf | `should_stop = True` immediately |
-| V2 Health check | Gradients are NaN/Inf, or loss explosion | Rollback to last checkpoint, halve LR, flush cache |
-
-### Experiment Tracking (RunManager / ExperimentManager)
-
-Every training run creates an auto-structured experiment directory:
-
-```
-runs/
-  run_0001/
-    config.yaml          # Frozen copy of model + training configuration
-    metrics.jsonl        # Step-by-step metrics (newline-delimited JSON)
-    train.log            # Console stdout log
-    checkpoint/          # Model checkpoints (checkpoint.pt, checkpoint.previous.pt)
-    summary.json         # Training summary (final loss, total tokens, duration)
-    plots/               # (future) Auto-generated metric plots
-    environment.txt      # Hardware, OS, Python version metadata
-    config.json          # Full configuration as JSON
-    training_profile.json # Per-component timing breakdown (V2 profiler)
-```
-
-**Config hash**: Each run records an 8-character SHA256 hash of the configuration, enabling exact reproducibility comparisons between runs.
-
-**JSONL logging**: Metrics are written as JSON lines, one per step (at log interval), containing loss, CE loss, aux loss, learning rate, gradient norm, throughput, and MoE metrics. This format is easily parsed with tools like `pandas.read_json(..., lines=True)`.
-
-### LR Scheduler
-
-Cosine decay with linear warmup:
-
-```
-warmup:     lr = step / warmup_steps * max_lr        (step < warmup_steps)
-cosine:     lr = min_lr_ratio + (1-min_lr_ratio) * 0.5 * (1 + cos(pi * progress))
-```
-
-Default parameters: `max_lr=3e-4`, `min_lr_ratio=0.1`, `warmup_steps=200`.
-
-### torch.compile Support
-
-The training entry point supports `--compile` for `torch.compile` graph optimization, which can significantly accelerate training on compatible hardware by fusing operations and reducing Python overhead.
-
----
+Switch corpus at runtime: `--corpus-dir data/corpus/corpus2_es_wiki_gutenberg_17M`
 
 ## Quick Start
 
-### Prerequisites
-
-- Python 3.10 or later
-- PyTorch 2.0 or later (CUDA or ROCm)
-- A CUDA-capable GPU with at least 8GB VRAM recommended (tested on AMD Radeon RX 9060 XT with ROCm)
-
-### Installation
-
 ```bash
-git clone https://github.com/Hunther4/M0.1.git
-cd M0.1
+git clone https://github.com/Hunther4/M0.1.git && cd M0.1
 pip install torch numpy pytest
-```
-
-### Prepare Data
-
-Download TinyShakespeare:
-
-```bash
-python -m src.data.prep --download
-```
-
-Or ingest a custom Spanish text corpus:
-
-```bash
-python -m src.data.prep -i path/to/corpus.txt -o data/raw_text/corpus.txt
-```
-
-> **Note:** ``python -m src.dataset.prep`` still works as a backward-compatible alias.
-
-### Train
-
-```bash
 python -m src.training.train --batch-size 4 --max-steps 1000
 ```
 
-For ROCm GPU (AMD):
-
-```bash
-.\venv_rocm\Scripts\python.exe -m src.training.train
-```
-
-### Command-Line Arguments
+## CLI Arguments
 
 | Argument | Default | Description |
 |----------|---------|-------------|
@@ -402,189 +64,53 @@ For ROCm GPU (AMD):
 | `--max-lr` | 3e-4 | Peak learning rate |
 | `--max-steps` | 100,000 | Total training steps |
 | `--warmup-steps` | 200 | LR warmup steps |
-| `--grad-accum-steps` | 1 | Gradient accumulation steps |
-| `--val-interval` | 500 | Steps between validation runs |
-| `--log-interval` | 10 | Steps between console logs |
-| `--save-interval` | 1,000 | Steps between checkpoint saves |
-| `--compile` | False | Enable torch.compile |
-| `--ema-decay` | 0.0 | EMA decay rate (0=disabled) |
-| `--tag` | "" | Optional run tag for experiment tracking |
-| `--resume` | False | Resume from latest checkpoint |
-
-### Generate Text
-
-```python
-from src.model.lm import TransformerLM
-from src.transformer.config import M01Config
-from src.tokenizer.bpe import Tokenizer
-from src.inference.generate import generate
-import torch
-
-config = M01Config()
-model = TransformerLM(config)
-model.load_state_dict(torch.load("path/to/checkpoint.pt", weights_only=True)["model_state_dict"])
-model.eval().to("cuda")
-
-tokenizer = Tokenizer()
-tokenizer.load("data/tokenizers/tokenizer.json")
-
-text = generate(model, tokenizer, "To be, or not to be", max_gen_len=200, temperature=0.8)
-print(text)
-```
-
----
+| `--grad-accum-steps` | 1 | Gradient accumulation |
+| `--corpus-dir` | — | Override corpus path |
+| `--resume` | — | Resume from checkpoint |
 
 ## Project Structure
 
 ```
 M0.1/
 ├── src/
-│   ├── transformer/            # Core model components
-│   │   ├── config.py           # M01Config dataclass (d_model, n_heads, num_experts, etc.)
-│   │   ├── embeddings.py       # TokenEmbedding with weight-tied output head
-│   │   ├── attention.py        # CausalSelfAttention (MLA, Hybrid, MHA modes)
-│   │   ├── moe.py              # MoELayer (shared + routed experts, gate, aux loss)
-│   │   ├── feedforward.py      # SwiGLU FeedForward (expert building block)
-│   │   ├── rope.py             # Rotary Positional Embeddings
-│   │   └── kv_cache.py         # Pre-allocated KV cache for autoregressive generation
-│   ├── model/                  # Model assembly
-│   │   ├── lm.py               # TransformerLM (embed -> blocks -> norm -> tied output)
-│   │   ├── block.py            # TransformerBlock (pre-norm attention + FF/MoE)
-│   │   └── rms_norm.py         # RMSNorm
-│   ├── training/               # Training entry point + shared utilities
-│   │   ├── train.py            # Main CLI entry point (uses V2 engine)
-│   │   ├── config.py           # TrainingConfig (batch_size, max_lr, warmup_steps, etc.)
-│   │   ├── dataset.py          # TinyShakespeareDataset, BinaryCorpusDataset
-│   │   ├── checkpoint.py       # CheckpointManager (V1, legacy interface)
-│   │   └── ...                 # V1 legacy modules (loop, eval, setup, datasets)
-│   ├── engine_v2/              # Active training engine (FSM, EventBus, LossPipeline)
-│   │   ├── __init__.py         # Public API exports
-│   │   ├── engine.py           # TrainingEngineV2 (FSM-based, enterprise-grade)
-│   │   ├── fsm.py              # StateMachine (state transitions with validation)
-│   │   ├── bus.py              # EventBus (decoupled publish/subscribe)
-│   │   ├── loss_pipeline.py    # LossPipeline (composable loss terms)
-│   │   ├── experiment.py       # ExperimentManager (run directory structure)
-│   │   ├── checkpoint_v2.py    # AsyncCheckpointManagerV2
-│   │   ├── ema.py              # EMA shadow weights
-│   │   ├── amp.py              # AMPContext (mixed precision)
-│   │   ├── metrics.py          # MetricRegistry
-│   │   ├── plugins.py          # Plugin system
-│   │   ├── profiler.py         # GranularProfiler
-│   │   ├── health.py           # HealthChecker (NaN/Inf recovery)
-│   │   └── loggers.py          # ConsoleLogger, JSONLLogger, CSVLogger
-│   ├── tokenizer/              # BPE tokenizer
-│   │   └── bpe.py
-│   ├── data/                   # Data preparation (canonical — unified from dataset/ + training/dataset.py)
-│   │   ├── prep.py             # Download/ingest text corpora
-│   │   └── __init__.py
-│   ├── dataset/                # Backward-compat shim → src.data
-│   │   └── __init__.py
-│   ├── inference/              # Text generation
-│   │   ├── generate.py         # Autoregressive text generation
-│   │   ├── sampling.py         # Sampling strategies (temperature, top-k, top-p)
-│   │   ├── profiling.py        # Inference profiling
-│   │   └── cli.py              # Inference CLI
-│   ├── eval/                   # Evaluation pipeline
-│   │   ├── evaluate.py         # Evaluation pipeline
-│   │   ├── metrics.py          # Evaluation metrics
-│   │   ├── qa.py               # Question answering evaluation
-│   │   └── utils.py            # Evaluation utilities
-│   └── tools/
-│       └── counter.py          # Parameter counting and model analysis
-├── tests/
-│   ├── test_attention.py       # Attention module tests
-│   ├── test_moe.py             # MoE layer tests
-│   ├── test_block.py           # Transformer block tests
-│   ├── test_lm.py              # Language model tests
-│   ├── test_rope.py            # RoPE tests
-│   ├── test_embeddings.py      # Embedding tests
-│   ├── test_feedforward.py     # Feedforward tests
-│   ├── test_rms_norm.py        # RMSNorm tests
-│   ├── test_kv_cache.py        # KV cache tests
-│   ├── test_config.py          # Config validation tests
-│   ├── test_tokenizer.py       # Tokenizer tests
-│   ├── test_training.py        # Training loop tests
-│   ├── test_moe_metrics.py     # MoE metrics tests
-│   ├── test_inference.py       # Inference tests
-│   ├── test_gpu_sanity.py      # GPU sanity checks
-│   ├── test_engine_v2_hardened.py  # V2 engine hardened tests
-│   ├── test_eval_*.py          # Evaluation tests
-│   ├── test_scripts_*.py       # Script integration tests
-│   └── ... (34 test files, 321 tests total)
-├── data/                       # Training data (TinyShakespeare, Spanish corpus)
-├── runs/                       # Experiment runs (run_0001/, run_0002/, etc.)
-├── docs/                       # Architecture and design documentation
-├── scripts/                    # Training and evaluation scripts
-├── artifacts/                  # Generated artifacts
-
-├── requirements.txt            # Python dependencies
-├── pytest.ini                  # Pytest configuration
-└── README.md                   # This file
+│   ├── transformer/   config, attention (MLA), moe, feedforward, rope, kv_cache
+│   ├── model/         lm, block, rms_norm
+│   ├── training/      train.py, dataset, config, checkpoint (V1 legacy kept for compat)
+│   ├── engine_v2/     TrainingEngineV2 (fsm, bus, loss_pipeline, ema, amp, ...)
+│   ├── tokenizer/     bpe.py
+│   ├── data/          prep.py (corpus builder)
+│   ├── inference/     generate.py, cli.py
+│   └── eval/          evaluation pipeline, metrics, QA
+├── tests/             ~79 tests (pytest)
+├── scripts/           train.py, compare.py, generate_report.py, expand_model.py, merge_checkpoints.py
+└── docs/              architecture docs
 ```
 
----
-
 ## Testing
-
-The project has 34 test files (321 tests total) covering all components:
 
 ```bash
 python -m pytest tests/ -q
 ```
 
-Run a specific test file:
+Covers: attention (MLA/MHA/Hybrid), MoE (routing, capacity, metrics), blocks, embeddings, RoPE, RMSNorm, KV cache, training engine V2, tokenizer, inference, evaluation, checkpoint integrity.
 
-```bash
-python -m pytest tests/test_moe.py -v
+## Inference
+
+```python
+from src.model.lm import TransformerLM; from src.transformer.config import M01Config
+from src.tokenizer.bpe import Tokenizer; from src.inference.generate import generate
+
+model = TransformerLM(M01Config(vocab_size=16384))
+model.load_state_dict(torch.load("checkpoint.pt", weights_only=True)["model_state_dict"])
+model.eval().to("cuda")
+tok = Tokenizer(); tok.load("data/tokenizers/tokenizer.json")
+print(generate(model, tok, "To be, or not to be", max_gen_len=200, temperature=0.8))
 ```
-
-Run GPU-specific tests (requires CUDA/ROCm):
-
-```bash
-python -m pytest tests/ -m gpu
-```
-
-The test suite covers:
-- **Model components**: attention (MLA, MHA, Hybrid), MoE (routing, shared experts, aux loss), feedforward (SwiGLU), embeddings (weight tying), RMSNorm, RoPE, KV cache.
-- **Model assembly**: transformer block, language model, parameter initialization.
-- **Training**: engine V1 and V2, callbacks, state management, checkpoint save/load, EMA, AMP, gradient flow.
-- **MoE metrics**: all 20+ metric functions, router collapse detection.
-- **Inference**: autoregressive generation, KV cache prefill, sampling strategies.
-- **Tokenizer**: BPE training, encoding, decoding.
-- **Cross-cutting**: model initialization, script integration, GPU sanity.
-- **Evaluation**: metric computation, QA evaluation.
-
----
-
-## Roadmap
-
-### Training Infrastructure
-
-- Extended inference optimization (speculative decoding, KV cache quantization).
-- WandB or MLflow integration for remote experiment tracking.
-- Hyperparameter optimization sweeps for LR, warmup, weight decay, and MoE-specific parameters.
-
-### Research Directions
-
-- Expert merging and pruning experiments to reduce inference cost.
-- Comparative analysis of attention variants (MLA vs MHA vs Hybrid) at identical parameter counts.
-- Joint optimization of Z-loss weight and load balancing loss coefficients.
-- Analysis of the relationship between router entropy, Gini coefficient, and model quality (validation loss).
-
----
 
 ## License
 
 MIT
 
----
-
 ## References
 
-- DeepSeek-V2: A Strong, Economical, and Efficient Mixture-of-Experts Language Model (2024)
-- DeepSeek-V3 Technical Report (2024)
-- Llama 2: Open Foundation and Fine-Tuned Chat Models (2023)
-- SwiGLU: A Gated Linear Unit for Feedforward Networks (2020)
-- RoFormer: Enhanced Transformer with Rotary Position Embedding (2021)
-- RMSNorm: Root Mean Square Layer Normalization (2019)
-- TinyShakespeare: Andrej Karpathy's char-rnn dataset
+- DeepSeek-V2/V3, Llama 2, SwiGLU, RoFormer, RMSNorm
