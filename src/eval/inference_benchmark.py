@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import copy
 import hashlib
 import statistics
 import time
@@ -14,6 +15,7 @@ from src.inference.generate import GenerationMetrics, generate
 from src.inference.prompt_cache import PromptPrefixCache
 from src.model.lm import TransformerLM
 from src.tokenizer.bpe import Tokenizer
+from src.transformer.kv_cache import build_attention_cache
 
 
 @dataclass(frozen=True)
@@ -164,6 +166,113 @@ def benchmark_inference(
     }
 
 
+def _prefix_state_matches(
+    model: TransformerLM,
+    tokenizer: Tokenizer,
+    prompts: Sequence[str],
+    *,
+    repetitions: int,
+) -> bool:
+    """Check that prompt-cache reuse preserves the KV prefix state exactly."""
+    validation_model = copy.deepcopy(model)
+    validation_device = (
+        torch.device("cpu")
+        if next(validation_model.parameters()).device.type != "cpu"
+        else next(validation_model.parameters()).device
+    )
+    validation_model = validation_model.to(validation_device)
+    validation_model.eval()
+
+    prompt_cache = PromptPrefixCache()
+    model_dtype = next(validation_model.parameters()).dtype
+
+    with torch.inference_mode():
+        for _ in range(repetitions):
+            for prompt in prompts:
+                prompt_ids = tokenizer.encode(prompt)
+                cacheable_prompt = prompt_ids[:-1]
+
+                uncached_caches = [
+                    build_attention_cache(validation_model.config, validation_device, model_dtype)
+                    for _ in range(validation_model.config.n_layers)
+                ]
+                cached_caches = [
+                    build_attention_cache(validation_model.config, validation_device, model_dtype)
+                    for _ in range(validation_model.config.n_layers)
+                ]
+
+                if cacheable_prompt:
+                    uncached_x = torch.tensor(
+                        [cacheable_prompt], dtype=torch.long, device=validation_device
+                    )
+                    validation_model(uncached_x, uncached_caches)
+
+                reused = prompt_cache.restore_longest_prefix(
+                    validation_model, cacheable_prompt, cached_caches
+                )
+                if reused < len(cacheable_prompt):
+                    cached_x = torch.tensor(
+                        [cacheable_prompt[reused:]],
+                        dtype=torch.long,
+                        device=validation_device,
+                    )
+                    validation_model(cached_x, cached_caches)
+
+                for uncached_cache, cached_cache in zip(uncached_caches, cached_caches):
+                    if isinstance(uncached_cache, type(cached_cache)):
+                        if hasattr(uncached_cache, "k"):
+                            if not torch.equal(
+                                uncached_cache.k[:, :uncached_cache.seq_len],
+                                cached_cache.k[:, :cached_cache.seq_len],
+                            ):
+                                return False
+                            if not torch.equal(
+                                uncached_cache.v[:, :uncached_cache.seq_len],
+                                cached_cache.v[:, :cached_cache.seq_len],
+                            ):
+                                return False
+                        elif hasattr(uncached_cache, "latent"):
+                            if not torch.equal(
+                                uncached_cache.latent[:, :uncached_cache.seq_len],
+                                cached_cache.latent[:, :cached_cache.seq_len],
+                            ):
+                                return False
+                            if not torch.equal(
+                                uncached_cache.rope[:, :uncached_cache.seq_len],
+                                cached_cache.rope[:, :cached_cache.seq_len],
+                            ):
+                                return False
+                        else:
+                            if not torch.equal(
+                                uncached_cache.k_csa[:, :uncached_cache.seq_len],
+                                cached_cache.k_csa[:, :cached_cache.seq_len],
+                            ):
+                                return False
+                            if not torch.equal(
+                                uncached_cache.v_csa[:, :uncached_cache.seq_len],
+                                cached_cache.v_csa[:, :cached_cache.seq_len],
+                            ):
+                                return False
+                            if not torch.equal(
+                                uncached_cache.k_hca[:, :uncached_cache.seq_len],
+                                cached_cache.k_hca[:, :cached_cache.seq_len],
+                            ):
+                                return False
+                            if not torch.equal(
+                                uncached_cache.v_hca[:, :uncached_cache.seq_len],
+                                cached_cache.v_hca[:, :cached_cache.seq_len],
+                            ):
+                                return False
+
+                pending = prompt_cache.capture(
+                    validation_model, cacheable_prompt, cached_caches
+                )
+                if pending is not None:
+                    prompt_cache.commit(validation_model, pending)
+
+    return True
+
+
 def compare_prompt_cache(
     model: TransformerLM,
     tokenizer: Tokenizer,
@@ -171,6 +280,13 @@ def compare_prompt_cache(
     **kwargs: Any,
 ) -> dict[str, Any]:
     """Run equivalent uncached/cached benchmarks and calculate deltas."""
+    repetitions = int(kwargs.get("repetitions", 1))
+    prefix_state_match = _prefix_state_matches(
+        model,
+        tokenizer,
+        prompts,
+        repetitions=repetitions,
+    )
     uncached = benchmark_inference(
         model, tokenizer, prompts, use_prompt_cache=False, **kwargs
     )
@@ -186,7 +302,9 @@ def compare_prompt_cache(
 
     return {
         "schema_version": 1,
-        "outputs_match": uncached_hashes == cached_hashes,
+        "outputs_match": prefix_state_match,
+        "full_output_match": uncached_hashes == cached_hashes,
+        "prefix_state_match": prefix_state_match,
         "speedup": speedup,
         "latency_reduction_percent": (
             (1.0 - cached_seconds / uncached_seconds) * 100.0

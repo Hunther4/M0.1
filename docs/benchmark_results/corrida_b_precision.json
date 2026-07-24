@@ -1,0 +1,50 @@
+{
+  "fp32": {
+    "requests": 9,
+    "prompt_tokens": 132,
+    "generated_tokens": 288,
+    "reused_prompt_tokens": 0,
+    "measured_seconds": 30.79290740000215,
+    "wall_seconds": 30.831141700000444,
+    "generated_tokens_per_second": 9.352803106860247,
+    "prefill_seconds_p50": 0.10252500000024156,
+    "prefill_seconds_p95": 4.871015799999438,
+    "decode_seconds_p50": 2.461690699999963,
+    "decode_seconds_p95": 2.6358589800005574,
+    "request_seconds_p50": 2.577798599999369,
+    "request_seconds_p95": 7.455904440000083,
+    "peak_memory_bytes": 235623936
+  },
+  "bf16": {
+    "requests": 9,
+    "prompt_tokens": 132,
+    "generated_tokens": 288,
+    "reused_prompt_tokens": 0,
+    "measured_seconds": 20.48322150000058,
+    "wall_seconds": 20.495316900000034,
+    "generated_tokens_per_second": 14.060288319393111,
+    "prefill_seconds_p50": 0.09064670000043407,
+    "prefill_seconds_p95": 0.626776060000702,
+    "decode_seconds_p50": 2.059222399999271,
+    "decode_seconds_p95": 2.249977519999811,
+    "request_seconds_p50": 2.197003399998721,
+    "request_seconds_p95": 2.7806980999994266,
+    "peak_memory_bytes": 78764032
+  },
+  "fp16": {
+    "requests": 9,
+    "prompt_tokens": 132,
+    "generated_tokens": 288,
+    "reused_prompt_tokens": 0,
+    "measured_seconds": 20.89755210000294,
+    "wall_seconds": 20.90986730000077,
+    "generated_tokens_per_second": 13.781518458325053,
+    "prefill_seconds_p50": 0.08446340000045893,
+    "prefill_seconds_p95": 0.9306724199999731,
+    "decode_seconds_p50": 2.0499445000004926,
+    "decode_seconds_p95": 2.3451989600005616,
+    "request_seconds_p50": 2.1341056000001117,
+    "request_seconds_p95": 3.1923739000008933,
+    "peak_memory_bytes": 78993408
+  }
+}
