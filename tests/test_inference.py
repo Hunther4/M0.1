@@ -170,6 +170,24 @@ class TestGenerate:
                 max_gen_len=mini_model.config.context_length,
             )
 
+    def test_generate_rejects_incompatible_tokenizer(self, mini_model):
+        from src.inference.generate import generate
+
+        class IncompatibleTokenizer:
+            special_tokens = {"<|endoftext|>": 256}
+
+            @staticmethod
+            def encode(_prompt):
+                return [mini_model.config.vocab_size]
+
+        with pytest.raises(ValueError, match="incompatible with the model vocabulary"):
+            generate(
+                model=mini_model,
+                tokenizer=IncompatibleTokenizer(),
+                prompt="test",
+                max_gen_len=1,
+            )
+
     def test_generate_produces_different_outputs_with_temp(self, mini_model):
         """Different temperatures MUST produce different outputs
         (statistical, not guaranteed but very likely with random logits)."""

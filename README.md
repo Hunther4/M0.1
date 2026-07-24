@@ -50,6 +50,37 @@ The model currently operates with 12 transformer layers (2 dense feedforward + 1
 
 The model has approximately **99.7M total parameters**. The 12 layers break down as: the first 2 use a standard dense feedforward (SwiGLU), and the remaining 10 use Mixture of Experts (1 shared + 4 routed, top-2). Every layer uses pre-normalization (RMSNorm) with residual connections around both the attention and feedforward sublayers.
 
+For the external-model research notes that informed the current optimization direction, see [docs/vendor_landscape_and_optimization_plan.md](./docs/vendor_landscape_and_optimization_plan.md).
+For the phased execution plan and improvement targets, see [docs/execution_plan_and_targets.md](./docs/execution_plan_and_targets.md).
+
+### Prompt Prefix Caching
+
+Inference can reuse the prefilled KV state of repeated or shared prompt prefixes
+through `PromptPrefixCache`. The cache supports MLA, hybrid attention, and
+standard MHA, uses bounded LRU eviction, and invalidates entries after model or
+configuration changes.
+
+```python
+from src.inference.generate import generate
+from src.inference.prompt_cache import PromptPrefixCache
+
+prompt_cache = PromptPrefixCache(max_entries=8, max_bytes=256 * 1024 * 1024)
+output = generate(model, tokenizer, prompt, prompt_cache=prompt_cache)
+print(prompt_cache.stats)
+```
+
+Measure the effect on a real checkpoint instead of assuming a fixed speedup:
+
+```bash
+python -m scripts.evaluation.benchmark_inference \
+  --checkpoint checkpoints/checkpoint.pt \
+  --tokenizer data/tokenizers/tokenizer.json \
+  --prompt "Shared system prompt: first task" \
+  --prompt "Shared system prompt: second task" \
+  --mode compare \
+  --output artifacts/evals/prompt_cache_benchmark.json
+```
+
 ### Multi-head Latent Attention (MLA)
 
 MLA is the attention mechanism introduced in DeepSeek-V2 that reduces the KV cache footprint by compressing key-value states into a low-rank latent space. Instead of caching separate K and V projections for every head (`2 * n_heads * d_head = 2 * d_model` floats per token), MLA caches a compressed latent plus a small RoPE projection.
