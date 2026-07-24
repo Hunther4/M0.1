@@ -109,3 +109,6 @@ runs/
 
 # Temp / scratch scripts (not source)
 .temp_*
+
+# External vendor clones (re-fetchable)
+external/
